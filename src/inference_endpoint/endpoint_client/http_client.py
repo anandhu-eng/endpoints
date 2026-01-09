@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -81,7 +81,7 @@ class AsyncHttpEndpointClient:
         asyncio.run_coroutine_threadsafe(self._initialize(), self.loop).result()
 
         logger.info(
-            f"[{self.client_id}] Started with adapter: {self.config.adapter.__name__}"
+            f"HTTPEndpointClient[{self.config.adapter.__name__}] initialized with num_workers={self.config.num_workers}"
         )
 
     async def _initialize(self) -> None:

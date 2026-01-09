@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -85,7 +85,6 @@ def http_client(perf_http_echo_server, tmp_path):
         aiohttp_config=AioHttpConfig(),
         zmq_config=zmq_config,
     )
-    client.start()
 
     try:
         yield client

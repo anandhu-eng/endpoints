@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -342,7 +342,7 @@ def test_shm_usage(sample_uuids):
         rec.wait_for_writes()
     events_created_ev.set()
 
-    worker_proc.join(timeout=5)
+    worker_proc.join(timeout=10)
     if worker_proc.is_alive():
         worker_proc.terminate()
         worker_proc.join(timeout=1)

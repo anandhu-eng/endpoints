@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,7 +18,7 @@ import time
 from abc import ABC, abstractmethod
 from typing import Any
 
-from ..dataset_manager.dataloader import DataLoader
+from ..dataset_manager.dataset import Dataset
 from ..metrics.recorder import EventRecorder
 from ..utils import sleep_ns
 from .events import SessionEvent
@@ -123,7 +123,7 @@ class LoadGenerator(ABC):
     def __init__(
         self,
         sample_issuer: SampleIssuer,
-        dataloader: DataLoader,
+        dataloader: Dataset,
         name: str | None = None,
     ):
         """Initialize load generator with required dependencies.
@@ -251,7 +251,7 @@ class SchedulerBasedLoadGenerator(LoadGenerator):
     def __init__(
         self,
         sample_issuer: SampleIssuer,
-        dataloader: DataLoader,
+        dataloader: Dataset,
         scheduler: Scheduler,
     ):
         """Initialize scheduler-based load generator.

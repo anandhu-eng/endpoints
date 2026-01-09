@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,16 +19,27 @@ Dataset Manager for the MLPerf Inference Endpoint Benchmarking System.
 This module handles dataset loading, preprocessing, and management.
 """
 
-from .dataloader import (
-    DataLoader,
-    HFDataLoader,
-    PickleReader,
-)
+from .dataset import Dataset, EmptyDataset
 from .factory import DataLoaderFactory
+from .transforms import (
+    AddStaticColumns,
+    ColumnNameRemap,
+    DropColumns,
+    FusedRowProcessor,
+    Harmonize,
+    UserPromptFormatter,
+    apply_transforms,
+)
 
 __all__ = [
-    "DataLoader",
+    "Dataset",
+    "EmptyDataset",
     "DataLoaderFactory",
-    "HFDataLoader",
-    "PickleReader",
+    "ColumnNameRemap",
+    "AddStaticColumns",
+    "UserPromptFormatter",
+    "DropColumns",
+    "FusedRowProcessor",
+    "Harmonize",
+    "apply_transforms",
 ]

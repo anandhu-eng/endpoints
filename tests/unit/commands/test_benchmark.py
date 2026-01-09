@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -38,6 +38,7 @@ from inference_endpoint.commands.benchmark import (
     _build_config_from_cli,
     run_benchmark_command,
 )
+from inference_endpoint.config.schema import APIType
 from inference_endpoint.exceptions import InputValidationError
 
 
@@ -57,6 +58,7 @@ def _create_mock_args(**overrides):
         "dataset": Path("test.pkl"),
         "model": "llama-2-70b",
         "api_key": None,
+        "api_type": APIType.OPENAI,
         "load_pattern": None,
         "target_qps": None,
         "concurrency": None,

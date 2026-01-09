@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -30,31 +30,12 @@ from .openai_types_gen import (
     ModelIdsShared,
     Object7,
     ReasoningEffort,
+    Role3,
     Role5,
     Role6,
     ServiceTier,
 )
-
-
-# msgspec structs for typed SSE message parsing (OpenAI streaming format)
-class SSEDelta(msgspec.Struct):
-    """SSE delta object containing content."""
-
-    content: str = ""
-    reasoning: str = ""
-
-
-class SSEChoice(msgspec.Struct):
-    """SSE choice object containing delta."""
-
-    delta: SSEDelta = msgspec.field(default_factory=SSEDelta)
-    finish_reason: str | None = None
-
-
-class SSEMessage(msgspec.Struct):
-    """SSE message structure for OpenAI streaming responses."""
-
-    choices: list[SSEChoice] = msgspec.field(default_factory=list)
+from .types import SSEMessage
 
 
 class OpenAIAdapter(HttpRequestAdapter):
@@ -88,17 +69,16 @@ class OpenAIAdapter(HttpRequestAdapter):
         if "prompt" not in query.data:
             raise ValueError("prompt not found in json_value")
 
+        messages = [{"role": Role5.user.value, "content": query.data["prompt"]}]
+        if "system" in query.data:
+            messages.insert(
+                0, {"role": Role3.system.value, "content": query.data["system"]}
+            )
+
         request = CreateChatCompletionRequest(
             model=ModelIdsShared(query.data.get("model", "no-model-name")),
             reasoning_effort=ReasoningEffort.medium,
-            messages=[
-                {"role": Role5.user.value, "content": query.data["prompt"]},
-                # TODO remove this once we have a way to handle the assistant message
-                # {
-                #     "role": Role.assistant.value,
-                #     "content": "You are a helpful assistant.",
-                # },
-            ],
+            messages=messages,
             stream=query.data.get("stream", False),
             max_completion_tokens=query.data.get("max_completion_tokens", 100),
             temperature=query.data.get("temperature", 0.7),

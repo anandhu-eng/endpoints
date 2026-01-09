@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -253,14 +253,13 @@ async def run_init_command(args: argparse.Namespace) -> None:
     Args:
         args: Command arguments.
               Required: --template TYPE (offline/online/eval/submission)
-              Optional: --output PATH (default: <type>_template.yaml)
 
     Raises:
         InputValidationError: If template type is unknown.
         SetupError: If template generation/writing fails.
     """
     template_type = args.template
-    output_path = getattr(args, "output", None) or f"{template_type}_template.yaml"
+    output_path = f"{template_type}_template.yaml"
 
     if template_type not in TEMPLATE_FILES:
         logger.error(f"Unknown template: {template_type}")

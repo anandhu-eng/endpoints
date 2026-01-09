@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -33,11 +33,8 @@ import pytest
 from inference_endpoint import metrics
 from inference_endpoint.config.runtime_settings import RuntimeSettings
 from inference_endpoint.config.schema import LoadPattern, LoadPatternType
-from inference_endpoint.dataset_manager.dataloader import (
-    DataLoader,
-    HFDataLoader,
-    PickleReader,
-)
+from inference_endpoint.dataset_manager.dataset import Dataset, DatasetFormat
+from inference_endpoint.dataset_manager.transforms import ColumnNameRemap
 from inference_endpoint.load_generator.events import SampleEvent, SessionEvent
 from inference_endpoint.load_generator.sample import SampleEventHandler
 from inference_endpoint.testing.docker_server import DockerServer
@@ -140,15 +137,15 @@ def mock_http_external_server():
 
 
 @pytest.fixture
-def dummy_dataloader():
+def dummy_dataset():
     """
-    Returns a DummyDataLoader object which just returns the sample index.
+    Returns a DummyDataset object which just returns the sample index.
     """
 
-    class DummyDataLoader(DataLoader):
+    class DummyDataset(Dataset):
         def __init__(self, n_samples: int = 100):
             """
-            Initialize the DummyDataLoader.
+            Initialize the DummyDataset.
 
             Args:
                 n_samples (int): The number of samples to load.
@@ -172,7 +169,7 @@ def dummy_dataloader():
             """
             return self.n_samples
 
-    return DummyDataLoader()
+    return DummyDataset()
 
 
 @pytest.fixture
@@ -188,11 +185,7 @@ def ds_pickle_reader(ds_pickle_dataset_path):
     """
     Returns a PickleReader object for the ds_samples.pkl file.
     """
-
-    def parser(row):
-        return row
-
-    return PickleReader(ds_pickle_dataset_path, parser=parser)
+    return Dataset.load_from_file(file_path=ds_pickle_dataset_path)
 
 
 @pytest.fixture
@@ -206,9 +199,13 @@ def hf_squad_dataset_path():
 @pytest.fixture
 def hf_squad_dataset(hf_squad_dataset_path):
     """
-    Returns a HFDataLoader object for the squad dataset.
+    Returns a HFDataset object for the squad dataset.
     """
-    return HFDataLoader(hf_squad_dataset_path, format="arrow")
+
+    return Dataset.load_from_file(
+        file_path=hf_squad_dataset_path,
+        format=DatasetFormat.HF,
+    )
 
 
 @pytest.fixture
@@ -332,20 +329,12 @@ class OracleServer(EchoServer):
         self.logger = logging.getLogger(__name__)
         self.file_path = file_path
 
-        def parser(x):
-            """
-            Extract the prompt and reference output from a dataset sample object.
-
-            Converts a dataset sample into a dictionary with 'prompt' and 'output' keys,
-            using the sample's text input as the prompt and reference output as the response.
-
-            Returns:
-                dict: A dictionary with 'prompt' and 'output' keys derived from the input sample.
-            """
-            return {"prompt": x["text_input"], "output": x["ref_output"]}
-
-        self.parser = parser
-        data_loader = PickleReader(self.file_path, parser=self.parser)
+        data_loader = Dataset.load_from_file(
+            self.file_path,
+            transforms=[
+                ColumnNameRemap({"text_input": "prompt", "ref_output": "output"})
+            ],
+        )
         data_loader.load()
         self.data = {}
         for i in range(data_loader.num_samples()):

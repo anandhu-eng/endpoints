@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,7 +22,11 @@ from inference_endpoint import metrics
 from inference_endpoint.config.runtime_settings import RuntimeSettings
 from inference_endpoint.config.schema import LoadPattern, LoadPatternType
 from inference_endpoint.core.types import QueryResult
-from inference_endpoint.dataset_manager import PickleReader
+from inference_endpoint.dataset_manager import Dataset
+from inference_endpoint.dataset_manager.transforms import (
+    AddStaticColumns,
+    ColumnNameRemap,
+)
 from inference_endpoint.endpoint_client.configs import (
     AioHttpConfig,
     HTTPClientConfig,
@@ -114,15 +118,13 @@ Test the load generator full run with a given URL.
 async def _run_load_generator_full_run_url(
     url, dataset_path, tmp_path, clean_sample_event_hooks, hf_model_name
 ):
-    def parser(x):
-        res = {
-            "prompt": x["text_input"],
-            "output": x["ref_output"],
-            "model": hf_model_name,
-        }
-        return res
-
-    dummy_dataloader = PickleReader(dataset_path, parser)
+    dummy_dataloader = Dataset.load_from_file(
+        dataset_path,
+        transforms=[
+            ColumnNameRemap({"text_input": "prompt", "ref_output": "output"}),
+            AddStaticColumns({"model": hf_model_name}),
+        ],
+    )
     dummy_dataloader.load()
     assert dummy_dataloader.num_samples() > 0
 
@@ -178,15 +180,13 @@ async def test_load_generator_full_run_mock_http_oracle_server(
     clean_sample_event_hooks,
     hf_model_name,
 ):
-    def parser(x):
-        res = {
-            "prompt": x["text_input"],
-            "output": x["ref_output"],
-            "model": hf_model_name,
-        }
-        return res
-
-    dummy_dataloader = PickleReader(ds_pickle_dataset_path, parser)
+    dummy_dataloader = Dataset.load_from_file(
+        ds_pickle_dataset_path,
+        transforms=[
+            ColumnNameRemap({"text_input": "prompt", "ref_output": "output"}),
+            AddStaticColumns({"model": hf_model_name}),
+        ],
+    )
     dummy_dataloader.load()
     assert dummy_dataloader.num_samples() > 0
 
