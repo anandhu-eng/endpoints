@@ -352,3 +352,59 @@ def generate_user_conf_submission_checker(report_dir: Path) -> None:
     except Exception as e:
         logger.error(f"Failed to generate user.conf: {e}")
         raise
+
+
+def generate_mlperf_log_details_submission_checker(
+    report_dir: Path, strict: bool
+) -> None:
+    """Generate mlperf_log_details.txt file for submission checker from summary.json.
+
+    Converts endpoints summary keys to loadgen keys using the mapping
+    defined in config.constants.ENDPOINTS_TO_LOADGEN_KEY_MAPPING.
+
+    Args:
+        report_dir: Path to the report directory containing summary.json.
+
+    Raises:
+        FileNotFoundError: If runtime_settings.json does not exist in report_dir.
+    """
+
+    summary_path = report_dir / "summary.json"
+    log_details_path = report_dir / "mlperf_log_details.txt"
+    marker = ":::ENDPTS"
+
+    if not summary_path.exists():
+        logger.error(f"summary.json not found in {report_dir}")
+        raise FileNotFoundError(f"summary.json not found in {report_dir}")
+    try:
+        with (
+            open(summary_path) as summary_file,
+            open(log_details_path, "w") as output_file,
+        ):
+            for line in summary_file:
+                line = line.strip()
+                if line.find(marker) == 0:
+                    try:
+                        record = json.loads(line[len(marker) :])
+                    except json.JSONDecodeError as e:
+                        if strict:
+                            logger.error(f"Encountered invalid line: {line} Error: {e}")
+                            raise
+                        else:
+                            logger.warning(f"Skipping invalid line: {line}")
+                            continue
+                    # map keys
+                    original_key = record.get("key")
+                    if original_key in ENDPOINTS_TO_LOADGEN_KEY_MAPPING:
+                        record["key"] = ENDPOINTS_TO_LOADGEN_KEY_MAPPING[original_key]
+                    output_file.write(
+                        f"{marker} {json.dumps(record, separators=(',', ':'))}\n"
+                    )
+                else:
+                    logger.warning(f"Found invalid line {line}, skipping.")
+
+        logger.info(f"Generated mlperf_log_details.txt at {log_details_path}")
+
+    except Exception as e:
+        logger.error(f"Failed to generate mlperf_log_details.txt: {e}")
+        raise

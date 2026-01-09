@@ -34,6 +34,7 @@ from transformers import AutoTokenizer
 from transformers.utils import logging as transformers_logging
 
 from inference_endpoint.commands.utils import (
+    generate_mlperf_log_details_submission_checker,
     generate_user_conf_submission_checker,
     get_default_report_path,
 )
@@ -698,12 +699,20 @@ def _run_benchmark(
         if config.ensure_submission_checker_compatibility:
             try:
                 # convert the runtime_settings.json to user.conf format and
-                # result_summary.json to mlperf_log_details.txt format(TODO)
                 generate_user_conf_submission_checker(report_dir)
             except Exception as e:
                 logger.error(
                     f"Failed to generate user conf for submission checker: {e}"
                 )
+                raise
+            try:
+                # generate mlperf_log_details.txt from summary.json
+                generate_mlperf_log_details_submission_checker(report_dir, strict=True)
+            except Exception as e:
+                logger.error(
+                    f"Failed to generate mlperf_log_details.txt for submission checker: {e}"
+                )
+                raise
 
     except KeyboardInterrupt:
         logger.warning("Benchmark interrupted by user")
