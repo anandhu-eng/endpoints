@@ -147,6 +147,65 @@ class LCBServe:
             test_suites, _ = build_prompt_benchmark(mock_args)
         return {suite.question_id: suite for suite in test_suites}
 
+    def evaluate(
+        self,
+        question_ids: list[int],
+        codes: list[list[str]],
+        timeout_sec: int = 60,
+        num_extract_fail: int = 0,
+    ) -> tuple[float, int]:
+        """Evaluates LiveCodeBench problems given question IDs and their corresponding code samples.
+
+        Args:
+            question_ids: List of question IDs to evaluate. Each question ID should exist in the loaded test suites.
+            codes: List of lists of code strings. Each inner list contains code samples for the corresponding
+                question_id. For example, codes[i] contains all code attempts for question_ids[i].
+            timeout_sec: Timeout in seconds for each worker to use for each test case. If a test case does
+                not complete within this timeout, it is treated as a test fail. (Default: 60)
+            num_extract_fail: Number of samples that failed code extraction. This is added to the total sample
+                count for pass@1 calculation. (Default: 0)
+
+        Returns:
+            tuple[float, int]: The pass@1 score and the number of samples that failed to extract code.
+
+        Raises:
+            KeyError: If any question_id is not found in the loaded test suites.
+        """
+        if len(question_ids) != len(codes):
+            raise ValueError(
+                f"Length mismatch: {len(question_ids)} question_ids but {len(codes)} code lists"
+            )
+
+        # Validate all question IDs exist in test suites
+        invalid_ids = [qid for qid in question_ids if qid not in self.test_suites]
+        if invalid_ids:
+            raise KeyError(
+                f"Question IDs not found in test suites: {invalid_ids[:10]}"
+                + (
+                    f" and {len(invalid_ids) - 10} more"
+                    if len(invalid_ids) > 10
+                    else ""
+                )
+            )
+
+        # Prepare test suites and codes for evaluation
+        test_suites_to_run = [self.test_suites[qid] for qid in question_ids]
+
+        # Calculate total samples: all code attempts across all questions + extraction failures
+        total_samples = sum(len(code_list) for code_list in codes) + num_extract_fail
+
+        # In the eval code for GPT-OSS in MLPerf Inference v6.0, a ProcessPoolExecutor is used.
+        # For now, we'll delegate the worker distribution to lcb_runner rather than handling it
+        # ourselves.
+        worker = _LCBWorker(
+            lcb_root=self.lcb_root,
+            n_lcb_workers=self.n_workers,
+            worker_timeout_sec=timeout_sec,
+        )
+        graded = worker(test_suites_to_run, codes)
+        pass_at_1 = sum([sum(results) for results in graded]) / total_samples
+        return pass_at_1, num_extract_fail
+
     def eval_parquet(
         self, parquet_file: Path, timeout_sec: int = 60
     ) -> tuple[float, int]:
@@ -174,30 +233,26 @@ class LCBServe:
         if "question_id" not in df.columns:
             raise ValueError(f"Question ID column not found in {file_path}")
 
-        total_samples = len(df)
+        # Count extraction failures before dropping
         num_extract_fail = int(df["extracted_code"].isnull().sum())
         df = df.dropna().reset_index(drop=True)
 
+        # Group codes by question ID
         test_inputs = defaultdict(list)
         for _, row in df.iterrows():
-            # Group by question ID in the case of repeats
             test_inputs[row["question_id"]].append(row["extracted_code"])
 
-        test_suites_to_run = []
-        codes_to_run = []
-        for qid, codes in test_inputs.items():
-            test_suites_to_run.append(self.test_suites[qid])
-            codes_to_run.append(codes)
+        # Convert to lists for evaluate method
+        question_ids = list(test_inputs.keys())
+        codes = [test_inputs[qid] for qid in question_ids]
 
-        # In the eval code for GPT-OSS in MLPerf Inference v6.0, a ProcessPoolExecutor is used.
-        # For now, we'll delegate the worker distribution to lcb_runner rather than handling it
-        # ourselves.
-        worker = _LCBWorker(
-            n_lcb_workers=self.n_workers, worker_timeout_sec=timeout_sec
+        # Delegate to evaluate method
+        return self.evaluate(
+            question_ids=question_ids,
+            codes=codes,
+            timeout_sec=timeout_sec,
+            num_extract_fail=num_extract_fail,
         )
-        graded = worker(test_suites_to_run, codes_to_run)
-        pass_at_1 = sum([sum(results) for results in graded]) / total_samples
-        return pass_at_1, num_extract_fail
 
 
 if __name__ == "__main__":
