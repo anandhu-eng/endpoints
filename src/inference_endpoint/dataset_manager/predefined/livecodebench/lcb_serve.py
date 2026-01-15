@@ -152,8 +152,7 @@ class LCBServe:
         question_ids: list[int],
         codes: list[list[str]],
         timeout_sec: int = 60,
-        num_extract_fail: int = 0,
-    ) -> tuple[float, int]:
+    ) -> int:
         """Evaluates LiveCodeBench problems given question IDs and their corresponding code samples.
 
         Args:
@@ -162,11 +161,9 @@ class LCBServe:
                 question_id. For example, codes[i] contains all code attempts for question_ids[i].
             timeout_sec: Timeout in seconds for each worker to use for each test case. If a test case does
                 not complete within this timeout, it is treated as a test fail. (Default: 60)
-            num_extract_fail: Number of samples that failed code extraction. This is added to the total sample
-                count for pass@1 calculation. (Default: 0)
 
         Returns:
-            tuple[float, int]: The pass@1 score and the number of samples that failed to extract code.
+            int: The number of samples that passed all test cases.
 
         Raises:
             KeyError: If any question_id is not found in the loaded test suites.
@@ -191,9 +188,6 @@ class LCBServe:
         # Prepare test suites and codes for evaluation
         test_suites_to_run = [self.test_suites[qid] for qid in question_ids]
 
-        # Calculate total samples: all code attempts across all questions + extraction failures
-        total_samples = sum(len(code_list) for code_list in codes) + num_extract_fail
-
         # In the eval code for GPT-OSS in MLPerf Inference v6.0, a ProcessPoolExecutor is used.
         # For now, we'll delegate the worker distribution to lcb_runner rather than handling it
         # ourselves.
@@ -203,8 +197,8 @@ class LCBServe:
             worker_timeout_sec=timeout_sec,
         )
         graded = worker(test_suites_to_run, codes)
-        pass_at_1 = sum([sum(results) for results in graded]) / total_samples
-        return pass_at_1, num_extract_fail
+        num_passed = sum([sum(results) for results in graded])
+        return num_passed
 
     def eval_parquet(
         self, parquet_file: Path, timeout_sec: int = 60
@@ -246,13 +240,18 @@ class LCBServe:
         question_ids = list(test_inputs.keys())
         codes = [test_inputs[qid] for qid in question_ids]
 
-        # Delegate to evaluate method
-        return self.evaluate(
+        # Evaluate and get number of passed samples
+        num_passed = self.evaluate(
             question_ids=question_ids,
             codes=codes,
             timeout_sec=timeout_sec,
-            num_extract_fail=num_extract_fail,
         )
+
+        # Calculate pass@1: total samples includes extraction failures
+        total_samples = sum(len(code_list) for code_list in codes) + num_extract_fail
+        pass_at_1 = num_passed / total_samples
+
+        return pass_at_1, num_extract_fail
 
 
 if __name__ == "__main__":

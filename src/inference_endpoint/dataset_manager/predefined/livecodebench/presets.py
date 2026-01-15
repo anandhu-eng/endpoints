@@ -56,6 +56,10 @@ def gptoss_sglang(
             columns=[
                 "question",
                 "starter_code",
+                "difficulty",
+                "public_test_cases",
+                "private_test_cases",
+                "func_name",
                 "user_prompt",
             ],
             errors="ignore",

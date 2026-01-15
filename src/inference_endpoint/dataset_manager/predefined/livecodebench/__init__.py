@@ -13,6 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import base64
+import gzip
+import json
+import pickle
 import random
 from logging import getLogger
 from pathlib import Path
@@ -36,8 +40,13 @@ class LiveCodeBench(
     """
 
     COLUMN_NAMES = [
+        "question_id",
         "question",
         "starter_code",
+        "difficulty",
+        "public_test_cases",
+        "private_test_cases",
+        "func_name",
     ]
 
     PRESETS = presets
@@ -62,12 +71,15 @@ class LiveCodeBench(
             return pd.read_parquet(dst_path)
 
         try:
+            # LCB is not up-to-date with HuggingFace 4.0+ APIs, and uses a custom setup script,
+            # so we need to set trust_remote_code to True to allow loading the dataset.
             df = load_from_huggingface(
                 "livecodebench/code_generation_lite",
                 split="test",
                 cache_dir=datasets_dir / "hf_cache" / f"{cls.DATASET_ID}_{variant}",
                 load_options={
                     "version_tag": variant,
+                    "trust_remote_code": True,
                 },
             )
         except Exception as e:
@@ -78,12 +90,57 @@ class LiveCodeBench(
 
         logger.info(f"Loaded {len(df)} samples from {variant} variant of LiveCodeBench")
 
-        # Following pre-processing steps from GPT-OSS side branch for parity with MLPerf Inference v6.0 GPT-OSS:
-        # https://github.com/v-shobhit/gpt-oss/blob/feat/mlperf_integration/gpt_oss/evals/livecodebench_eval.py#L75
+        df = df.rename(columns={"question_content": "question"})
 
-        keep = ["question_id", "question_content", "starter_code"]
-        df = df[keep]
-        df.rename(columns={"question_content": "question"}, inplace=True)
+        # We do not care about 'competition start date' since we evaluate on the entire dataset anyway.
+        # LiveCodeBench is a constantly evolving dataset, but will be pinned by version, so as long as
+        # we are consistent with the version_tag being used, we should be good.
+        df = df.drop(columns=["question_title", "contest_date", "contest_id"])
+
+        # Unpack the private test cases. In most cases, the private test cases are stored as either a
+        # JSON string, or a Base64-encoded GZIP'd pickle'd string, which needs to be JSON decoded.
+        # Reference: https://github.com/LiveCodeBench/LiveCodeBench/blob/28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24/lcb_runner/benchmarks/code_generation.py#L64-L74
+        def deserialize_private_test(private_test_cases: str) -> str:
+            try:
+                # Check if it is already JSON - if it is, do nothing.
+                _ = json.loads(private_test_cases)
+                return private_test_cases
+            except json.JSONDecodeError as json_error:
+                # Otherwise, it is a Base64-encoded GZIP'd pickle'd string.
+                # If any steps fail, the dataset is probably malformed, and should be a fatal error.
+
+                # Decode the Base64 string
+                decoded_bytes = base64.b64decode(private_test_cases.encode("utf-8"))
+
+                # Gunzip the bytes
+                gunzipped_bytes = gzip.decompress(decoded_bytes)
+
+                # Unpickle the bytes
+                unpickled_obj = pickle.loads(gunzipped_bytes)
+
+                if not isinstance(unpickled_obj, str):
+                    raise ValueError(
+                        "Invalid private_test_cases format. Is the dataset malformed?"
+                    ) from json_error
+
+                # Check if is valid JSON
+                _ = json.loads(unpickled_obj)
+                return unpickled_obj
+
+        df["private_test_cases"] = df["private_test_cases"].apply(
+            deserialize_private_test
+        )
+
+        # The only important metadata field for evaluation is the 'func_name' field
+        def get_func_name(metadata_json: str) -> str:
+            try:
+                metadata = json.loads(metadata_json)
+                return metadata.get("func_name", "")
+            except json.JSONDecodeError:
+                return ""
+
+        df["func_name"] = df["metadata"].apply(get_func_name)
+        df = df.drop(columns=["metadata"])
 
         # If max_samples is specified, sample 'max_samples' rows from the dataset
         if max_samples is not None and max_samples < len(df):
