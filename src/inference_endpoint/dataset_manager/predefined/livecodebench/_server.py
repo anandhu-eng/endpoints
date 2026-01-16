@@ -29,7 +29,7 @@ from typing import Literal
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field, field_validator
 
-from .lcb_serve import LCBServe
+from lib.lcb_serve import LCBServe
 
 
 class EvaluationRequest(BaseModel):

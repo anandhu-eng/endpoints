@@ -3,11 +3,14 @@
 ## -----------------------------------------------------
 FROM dhi.io/python:3.14-debian13-sfw-dev AS build-stage
 
+
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PATH="/app/venv/bin:$PATH"
 
 WORKDIR /app
+
+RUN --mount=type=secret,id=HF_TOKEN,dst=/run/secrets/hf_token export HF_TOKEN=$(cat /run/secrets/hf_token)
 
 RUN python -m venv /app/venv
 RUN sfw pip install --no-cache-dir \
@@ -23,8 +26,8 @@ RUN mkdir -p /opt/LiveCodeBench_Datasets/release_v6
 COPY generate.py /opt/LiveCodeBench_Datasets/generate.py
 
 RUN python /opt/LiveCodeBench_Datasets/generate.py \
-    --datasets-dir /opt/LiveCodeBench_Datasets/release_v6 \
-    --version-tag release_v6
+    --datasets-dir /opt/LiveCodeBench_Datasets \
+    --variant release_v6
 RUN chmod 444 -R /opt/LiveCodeBench_Datasets/*
 RUN chmod 755 /opt/LiveCodeBench_Datasets
 
@@ -39,9 +42,9 @@ WORKDIR /app
 
 COPY --from=build-stage /app/venv /app/venv
 COPY --from=build-stage /opt/LiveCodeBench_Datasets /opt/LiveCodeBench_Datasets
-COPY lcb_serve.py /app/lcb_serve.py
-COPY run_lcb_tests.py /app/run_lcb_tests.py
-COPY generate.py /app/generate.py
+COPY lcb_serve.py /app/lib/lcb_serve.py
+COPY run_lcb_tests.py /app/lib/run_lcb_tests.py
+COPY generate.py /app/lib/generate.py
 COPY _server.py /app/server.py
 
 # Make lcb_serve.py available as a module

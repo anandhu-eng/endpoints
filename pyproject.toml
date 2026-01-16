@@ -98,6 +98,7 @@ exclude = [
     "tests/datasets/*",
     "src/inference_endpoint/openai/openai_types_gen.py",
     "src/inference_endpoint/openai/openapi.yaml",
+    "src/inference_endpoint/dataset_manager/predefined/livecodebench/_server.py",
     "datasets/*",
     "datasets/",
 ]
