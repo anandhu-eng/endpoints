@@ -20,12 +20,12 @@ with real-time progress updates via callbacks.
 """
 
 import asyncio
+import json
 import os
 import traceback
 from pathlib import Path
 from typing import Literal
 
-import orjson
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field, field_validator
 
@@ -296,9 +296,9 @@ async def websocket_evaluate(websocket: WebSocket):
         # Receive and validate request
         raw_data = await websocket.receive_text()
         try:
-            data_dict = orjson.loads(raw_data)
+            data_dict = json.loads(raw_data)
             request = EvaluationRequest(**data_dict)
-        except (orjson.JSONDecodeError, ValueError) as e:
+        except (json.JSONDecodeError, ValueError) as e:
             await websocket.send_json(
                 ProgressMessage(
                     status="error",

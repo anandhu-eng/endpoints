@@ -5,17 +5,9 @@ FROM dhi.io/python:3.14-debian13-sfw-dev AS build-stage
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV PATH="/app/venv/bin:/root/.cargo/bin:$PATH"
+ENV PATH="/app/venv/bin:$PATH"
 
 WORKDIR /app
-
-# Build-deps
-RUN apt update \
-    && apt install -y --no-install-recommends curl build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Cargo (orjson is based on Rust)
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 
 RUN python -m venv /app/venv
 RUN sfw pip install --no-cache-dir \
@@ -24,7 +16,6 @@ RUN sfw pip install --no-cache-dir \
     fastapi==0.128.0 \
     uvicorn[standard]==0.40.0 \
     pydantic==2.12.5 \
-    orjson==3.11.0 \
     tqdm==4.67.1
 
 RUN mkdir -p /opt/LiveCodeBench_Datasets/release_v6
@@ -33,7 +24,7 @@ COPY generate.py /opt/LiveCodeBench_Datasets/generate.py
 
 RUN python /opt/LiveCodeBench_Datasets/generate.py \
     --datasets-dir /opt/LiveCodeBench_Datasets/release_v6 \
-    --variant release_v6
+    --version-tag release_v6
 RUN chmod 444 -R /opt/LiveCodeBench_Datasets/*
 RUN chmod 755 /opt/LiveCodeBench_Datasets
 
@@ -49,6 +40,7 @@ WORKDIR /app
 COPY --from=build-stage /app/venv /app/venv
 COPY --from=build-stage /opt/LiveCodeBench_Datasets /opt/LiveCodeBench_Datasets
 COPY lcb_serve.py /app/lcb_serve.py
+COPY run_lcb_tests.py /app/run_lcb_tests.py
 COPY generate.py /app/generate.py
 COPY _server.py /app/server.py
 
