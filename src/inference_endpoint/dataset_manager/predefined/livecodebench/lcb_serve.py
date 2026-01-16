@@ -37,12 +37,10 @@ running in.
 import argparse
 import json
 import multiprocessing as mp
-import os
 import traceback
 from collections import defaultdict
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from contextlib import contextmanager
 from pathlib import Path
 
 import pandas as pd
@@ -50,23 +48,13 @@ import pandas as pd
 from .generate import generate_dataset
 
 
-@contextmanager
-def chdir(path: Path):
-    """Context manager to change the current working directory to the given path."""
-    old_dir = os.getcwd()
-    os.chdir(path)
-    try:
-        yield
-    finally:
-        os.chdir(old_dir)
-
-
 def execute_code_single(test_suite_json: str, code: str, timeout_sec: int = 60):
     # Run code with lcb_runner. Note that the lcb_runner has a very rudimentary sandbox
     # which is extremely easy to bypass, and as such it is recommended to run this both
     # in an unprivileged container and in a separate process.
     import numpy as np
-    from lcb_runner.evaluation.testing_util import run_test
+
+    from .run_lcb_tests import run_test
 
     res, metadata = run_test(
         {"input_output": test_suite_json}, test=code, debug=False, timeout=timeout_sec
@@ -113,7 +101,6 @@ def run_code_subprocess(
     test_suite_json: str,
     code: str,
     timeout_sec: int = 60,
-    lcb_root: Path = Path("/opt/LiveCodeBench"),
 ):
     # Compute global timeout -
     # https://github.com/LiveCodeBench/LiveCodeBench/blob/28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24/lcb_runner/evaluation/compute_code_generation_metrics.py#L43
@@ -127,23 +114,22 @@ def run_code_subprocess(
 
     manager = mp.Manager()
     resp_buffer = manager.list()
-    with chdir(lcb_root):
-        p = mp.Process(
-            target=execute_code_single_suppressed_errors,
-            args=(
-                test_suite_json,
-                code,
-            ),
-            kwargs={
-                "resp_buffer": resp_buffer,
-                "timeout_sec": timeout_sec,
-            },
-        )
-        p.start()
-        p.join(timeout=global_timeout)
+    p = mp.Process(
+        target=execute_code_single_suppressed_errors,
+        args=(
+            test_suite_json,
+            code,
+        ),
+        kwargs={
+            "resp_buffer": resp_buffer,
+            "timeout_sec": timeout_sec,
+        },
+    )
+    p.start()
+    p.join(timeout=global_timeout)
 
-        if p.is_alive():
-            p.kill()
+    if p.is_alive():
+        p.kill()
 
     if len(resp_buffer) == 0:
         # Assume timeout
@@ -163,17 +149,10 @@ class _LCBWorker:
     def __init__(
         self,
         test_suites: dict[int, str],
-        lcb_root: Path = Path("/opt/LiveCodeBench"),
         n_lcb_workers: int = 1,
         worker_timeout_sec: int = 60,
     ):
-        if not lcb_root.exists():
-            raise FileNotFoundError(
-                f"LiveCodeBench root directory {lcb_root} does not exist"
-            )
-
         self.test_suites = test_suites
-        self.lcb_root = lcb_root
         self.n_lcb_workers = n_lcb_workers
         self.worker_timeout_sec = worker_timeout_sec
 
@@ -209,7 +188,6 @@ class _LCBWorker:
                         test_suite,
                         code,
                         timeout_sec=self.worker_timeout_sec,
-                        lcb_root=self.lcb_root,
                     )
 
                     # Note that futures are hashable for bookkeeping purposes.
@@ -251,8 +229,7 @@ class LCBServe:
         version_tag: str = "release_v6",
         use_lite: bool = True,
         n_workers: int | None = None,
-        datasets_dir: Path = Path("/mnt/datasets"),
-        lcb_root: Path = Path("/opt/LiveCodeBench"),
+        datasets_dir: Path = Path("/opt/LiveCodeBench_Datasets"),
         auto_generate_dataset: bool = True,
     ):
         self.version_tag = version_tag
@@ -266,7 +243,6 @@ class LCBServe:
         self.path_to_dataset = (
             Path(datasets_dir) / f"livecodebench_{version_tag}.parquet"
         )
-        self.lcb_root = Path(lcb_root)
 
         self.df = None
         if not self.path_to_dataset.exists():
@@ -275,14 +251,10 @@ class LCBServe:
                     f"Dataset file {self.path_to_dataset} does not exist"
                 )
 
+            print("Generating dataset... This may take a while...")
             self.df = generate_dataset(
                 datasets_dir=datasets_dir,
                 variant=version_tag,
-            )
-
-        if not self.lcb_root.exists():
-            raise FileNotFoundError(
-                f"LiveCodeBench root directory {self.lcb_root} does not exist"
             )
 
         # Load the dataset - All test cases should already be extracted
@@ -357,7 +329,6 @@ class LCBServe:
 
         worker = _LCBWorker(
             self.test_suites,
-            lcb_root=self.lcb_root,
             n_lcb_workers=self.n_workers,
             worker_timeout_sec=timeout_sec,
         )
@@ -374,7 +345,6 @@ class LCBServe:
             "total_samples": int,
             "passed_samples": int,
             "pass_at_1": float,
-            "num_extract_fail": int,
         }
 
         Args:
@@ -390,24 +360,14 @@ class LCBServe:
                 "total_samples": int,
                 "passed_samples": int,
                 "pass_at_1": float,
-                "num_extract_fail": int,
             }
 
         Raises:
             FileNotFoundError: If the parquet file does not exist.
             ValueError: If the extracted code column or question ID column is not found in the parquet file.
         """
-        # Count extraction failures before dropping
-        failed_extract = df[df["extracted_code"].isnull()]
-        num_extract_fail = len(failed_extract)
-
-        # Immediately signal failed extracts as complete
-        if on_problem_complete is not None:
-            qid_list = failed_extract["question_id"].tolist()
-            on_problem_complete(qid_list)
-
-        # Drop failed extractions from samples to be passed to evaluate()
-        df = df.dropna().reset_index(drop=True)
+        # Replace null extracted codes with empty strings (will fail evaluation naturally)
+        df["extracted_code"] = df["extracted_code"].fillna("")
 
         # Group codes by question ID
         codes_dict = defaultdict(list)
@@ -421,17 +381,14 @@ class LCBServe:
             on_problem_complete=on_problem_complete,
         )
 
-        # Calculate pass@1: total samples includes extraction failures
-        total_samples = (
-            sum(len(code_list) for code_list in codes_dict.values()) + num_extract_fail
-        )
-        pass_at_1 = num_passed / total_samples
+        # Calculate pass@1
+        total_samples = len(df)
+        pass_at_1 = num_passed / total_samples if total_samples > 0 else 0.0
 
         return {
             "total_samples": total_samples,
             "passed_samples": num_passed,
             "pass_at_1": pass_at_1,
-            "num_extract_fail": num_extract_fail,
         }
 
 
@@ -457,14 +414,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--datasets-dir",
         type=Path,
-        default=Path("/mnt/datasets"),
-        help="Directory where datasets are stored (default: /mnt/datasets)",
-    )
-    parser.add_argument(
-        "--lcb-root",
-        type=Path,
-        default=Path("/opt/LiveCodeBench"),
-        help="Path to LiveCodeBench root directory (default: /opt/LiveCodeBench)",
+        default=Path("/opt/LiveCodeBench_Datasets"),
+        help="Directory where datasets are stored (default: /opt/LiveCodeBench_Datasets)",
     )
     parser.add_argument(
         "--timeout",
@@ -484,7 +435,6 @@ if __name__ == "__main__":
     lcb_serve = LCBServe(
         version_tag=args.version_tag,
         datasets_dir=args.datasets_dir,
-        lcb_root=args.lcb_root,
     )
 
     with tqdm(total=len(df)) as pbar:

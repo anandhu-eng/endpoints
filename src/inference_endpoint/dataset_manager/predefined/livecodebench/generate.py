@@ -59,6 +59,11 @@ def generate_dataset(
     if not datasets_dir.exists():
         raise FileNotFoundError(f"Datasets directory {datasets_dir} does not exist")
 
+    dst_path = datasets_dir / f"livecodebench_{variant}.parquet"
+    if dst_path.exists() and not force:
+        logger.info(f"Dataset already exists at {dst_path}. Loading from file.")
+        return pd.read_parquet(dst_path)
+
     df = load_dataset(
         "livecodebench/code_generation_lite",
         version_tag=variant,
@@ -131,7 +136,6 @@ def generate_dataset(
         logger.info(f"Sampled {max_samples} questions")
 
     # Save to parquet file
-    dst_path = datasets_dir / f"livecodebench_{variant}.parquet"
     df.to_parquet(dst_path)
     logger.info(f"Saved {len(df)} samples to {dst_path}")
 
