@@ -55,7 +55,7 @@ ENV PYTHONPATH="/app:${PYTHONPATH}"
 # - timeout-keep-alive: Allow connections to stay open for hours
 # - ws-ping-interval: Send ping every 30s to keep connection alive
 # - ws-ping-timeout: Wait 10s for pong response before considering connection dead
-CMD ["uvicorn", "server:app", "--host", "127.0.0.1", "--port", "13835", \
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "13835", \
      "--timeout-keep-alive", "7200", \
      "--ws-ping-interval", "30", \
      "--ws-ping-timeout", "10"]
