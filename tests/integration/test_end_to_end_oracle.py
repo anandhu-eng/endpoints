@@ -15,6 +15,7 @@
 
 import logging
 import random
+from pathlib import Path
 from urllib.parse import urljoin
 
 import pytest
@@ -25,13 +26,9 @@ from inference_endpoint.core.types import QueryResult
 from inference_endpoint.dataset_manager import Dataset
 from inference_endpoint.dataset_manager.transforms import (
     AddStaticColumns,
-    ColumnNameRemap,
+    ColumnRemap,
 )
-from inference_endpoint.endpoint_client.configs import (
-    AioHttpConfig,
-    HTTPClientConfig,
-    ZMQConfig,
-)
+from inference_endpoint.endpoint_client.config import HTTPClientConfig
 from inference_endpoint.endpoint_client.http_client import HTTPEndpointClient
 from inference_endpoint.endpoint_client.http_sample_issuer import HttpClientSampleIssuer
 from inference_endpoint.load_generator import (
@@ -42,30 +39,14 @@ from inference_endpoint.load_generator import (
     WithoutReplacementSampleOrder,
 )
 
-from tests.test_helpers import get_test_socket_path
-
 
 class DeepSeekR1SampleIssuer(HttpClientSampleIssuer):
-    def __init__(self, tmp_path: str, url: str):
+    def __init__(self, tmp_path: Path, url: str):
         self.http_config = HTTPClientConfig(
-            endpoint_url=urljoin(url, "/v1/chat/completions"),
-            num_workers=16,
+            endpoint_urls=[urljoin(url, "/v1/chat/completions")],
+            warmup_connections=False,
         )
-        self.aiohttp_config = AioHttpConfig()
-        self.zmq_config = ZMQConfig(
-            zmq_request_queue_prefix=get_test_socket_path(
-                tmp_path, "test_streaming", "_req"
-            ),
-            zmq_response_queue_addr=get_test_socket_path(
-                tmp_path, "test_streaming", "_resp"
-            ),
-            zmq_readiness_queue_addr=get_test_socket_path(
-                tmp_path, "test_streaming", "_ready"
-            ),
-        )
-        super().__init__(
-            HTTPEndpointClient(self.http_config, self.aiohttp_config, self.zmq_config)
-        )
+        super().__init__(HTTPEndpointClient(self.http_config))
 
 
 async def run_benchmark(server_url, dataloader, tmp_path, rt_settings):
@@ -121,7 +102,7 @@ async def _run_load_generator_full_run_url(
     dummy_dataloader = Dataset.load_from_file(
         dataset_path,
         transforms=[
-            ColumnNameRemap({"text_input": "prompt", "ref_output": "output"}),
+            ColumnRemap({"text_input": "prompt", "ref_output": "output"}),
             AddStaticColumns({"model": hf_model_name}),
         ],
     )
@@ -183,7 +164,7 @@ async def test_load_generator_full_run_mock_http_oracle_server(
     dummy_dataloader = Dataset.load_from_file(
         ds_pickle_dataset_path,
         transforms=[
-            ColumnNameRemap({"text_input": "prompt", "ref_output": "output"}),
+            ColumnRemap({"text_input": "prompt", "ref_output": "output"}),
             AddStaticColumns({"model": hf_model_name}),
         ],
     )

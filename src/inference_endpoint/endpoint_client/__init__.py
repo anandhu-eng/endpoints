@@ -19,13 +19,11 @@ Endpoint Client for the MLPerf Inference Endpoint Benchmarking System.
 This module provides HTTP client implementation with multiprocessing and ZMQ.
 """
 
-from .configs import AioHttpConfig, HTTPClientConfig, ZMQConfig
+from .config import HTTPClientConfig
 from .http_client import AsyncHttpEndpointClient, HTTPEndpointClient
 
 __all__ = [
     "AsyncHttpEndpointClient",
     "HTTPEndpointClient",
     "HTTPClientConfig",
-    "AioHttpConfig",
-    "ZMQConfig",
 ]

@@ -20,14 +20,17 @@ from enum import Enum
 from logging import getLogger
 from os import PathLike
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 import pandas as pd
 from datasets import load_dataset, load_from_disk
-from transformers import AutoTokenizer, PreTrainedTokenizer
 
-from .transforms import Transform, apply_transforms
+from ..config.schema import APIType, ModelParams
+from .transforms import Transform, apply_transforms, get_transforms_for_api_type
+
+if TYPE_CHECKING:
+    from inference_endpoint.endpoint_client.adapter_protocol import HttpRequestAdapter
 
 logger = getLogger(__name__)
 
@@ -63,9 +66,6 @@ class DatasetFormat(Enum):
 
     HF = "huggingface"
     """HuggingFace dataset."""
-
-    RANDOM = "random"
-    """Random dataset. This is a dataset that is generated randomly."""
 
 
 class DatafileLoader(ABC):
@@ -104,7 +104,7 @@ class DatafileLoader(ABC):
         self,
         *args,
         **kwargs,
-    ):
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.dataframe: pd.DataFrame | None = None
 
@@ -118,12 +118,13 @@ class DatafileLoader(ABC):
 
     def get_num_samples(self) -> int:
         """Get the number of samples in the dataset."""
+        assert self.dataframe is not None
         return len(self.dataframe)
 
     @classmethod
     def get_loader(
         cls, file_path: os.PathLike, format: DatasetFormat | None = None
-    ) -> "DatafileLoader":
+    ) -> type["DatafileLoader"]:
         """Get the loader for the dataset."""
 
         if format is not None:
@@ -142,12 +143,13 @@ class ParquetLoader(DatafileLoader, format=DatasetFormat.PARQUET):
         file_path: Path | str,
         *args,
         **kwargs,
-    ):
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.parquet_path = Path(file_path)
 
     def read(self) -> None:
-        self.dataframe = pd.read_parquet(self.parquet_path)
+        # Note we need the dtype_backend="pyarrow" to avoid issues with numpy arrays in the dataframe
+        self.dataframe = pd.read_parquet(self.parquet_path, dtype_backend="pyarrow")
 
 
 class HuggingFaceLoader(DatafileLoader, format=DatasetFormat.HF):
@@ -156,7 +158,7 @@ class HuggingFaceLoader(DatafileLoader, format=DatasetFormat.HF):
         file_path: Path | str | None = None,
         *args,
         **kwargs,
-    ):
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.file_path = file_path
         self.dataset_name = kwargs.get("dataset_name", None)
@@ -181,7 +183,7 @@ class CSVLoader(DatafileLoader, format=DatasetFormat.CSV):
         csv_path: Path | str,
         *args,
         **kwargs,
-    ):
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.csv_path = Path(csv_path)
 
@@ -195,7 +197,7 @@ class PickleListLoader(DatafileLoader, format=DatasetFormat.PICKLE):
         file_path: Path | str,
         *args,
         **kwargs,
-    ):
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.pickle_path = Path(file_path)
 
@@ -209,7 +211,7 @@ class JsonlLoader(DatafileLoader, format=DatasetFormat.JSONL):
         jsonl_path: Path | str,
         *args,
         **kwargs,
-    ):
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.jsonl_path = Path(jsonl_path)
 
@@ -223,78 +225,12 @@ class JsonLoader(DatafileLoader, format=DatasetFormat.JSON):
         json_path: Path | str,
         *args,
         **kwargs,
-    ):
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.json_path = Path(json_path)
 
     def read(self) -> None:
         self.dataframe = pd.read_json(self.json_path)
-
-
-class RandomDataGenerator(DatafileLoader, format=DatasetFormat.RANDOM):
-    def __init__(
-        self,
-        *,
-        num_sequences: int = 1024,
-        input_seq_length: int = 1024,
-        range_ratio: float = 1.0,
-        random_seed: int = 42,
-        save_tokenized_data: bool = False,
-        tokenizer: str | PreTrainedTokenizer,
-    ):
-        super().__init__()
-        self.input_seq_length = input_seq_length
-        self.num_sequences = num_sequences
-        self.range_ratio = range_ratio
-        self.random_seed = random_seed
-        if isinstance(tokenizer, str):
-            self.tokenizer = AutoTokenizer.from_pretrained(tokenizer)
-        else:
-            self.tokenizer = tokenizer
-        self.save_tokenized_data = save_tokenized_data
-        self.rng = np.random.default_rng(random_seed)
-
-    def read(self) -> None:
-        self.dataframe = self._generate_random_sequence()
-
-    def _generate_random_sequence(self) -> pd.DataFrame:
-        data = []
-        tokenizer = self.tokenizer
-        # Generate the input sequence lengths given the range ratio
-        input_seq_length = self.rng.integers(
-            int(self.input_seq_length * self.range_ratio),
-            self.input_seq_length + 1,
-            self.num_sequences,
-        )
-        # Generate the input starts randomly from the vocab size
-        input_starts = self.rng.integers(0, tokenizer.vocab_size, self.num_sequences)
-
-        # Generate the input sequences
-        for i in range(self.num_sequences):
-            # Generate the input sequence by adding the input starts to the input sequence lengths and modding by the vocab size
-            input_sequence = [
-                (input_starts[i] + j) % tokenizer.vocab_size
-                for j in range(input_seq_length[i])
-            ]
-            # Decode the input sequence to get the text prompt
-            prompt = tokenizer.decode(input_sequence, add_special_tokens=False)
-            # If we are saving the tokenized data, append the input sequence to the input tokens
-            # This can be useful for debugging or for other purposes
-            if self.save_tokenized_data:
-                # Encode the prompt to get the input tokens back
-                input_tokens = tokenizer.encode(prompt, add_special_tokens=False)
-            else:
-                input_tokens = None
-            data.append(
-                {
-                    "prompt": prompt,
-                    "input_tokens": input_tokens,
-                    "input_seq_length": input_seq_length[i],
-                }
-            )
-
-        self.dataframe = pd.DataFrame(data)
-        return self.dataframe
 
 
 def load_from_huggingface(
@@ -322,6 +258,12 @@ def load_from_huggingface(
     load_options = load_options or {}
     cache_options = cache_options or {}
 
+    if cache_dir is not None and cache_dir.exists():
+        try:
+            ds = load_from_disk(str(cache_dir), **cache_options)
+            return ds[split].to_pandas()
+        except Exception as e:
+            logger.warning(f"Error loading dataset from cache: {e}")
     ds = load_dataset(dataset_path, dataset_name, **load_options)
 
     if cache_dir is not None:
@@ -353,6 +295,9 @@ class Dataset:
     PREDEFINED: ClassVar[dict[str, type["Dataset"]]] = {}
     """A dictionary of predefined datasets, as subclasses of Dataset."""
 
+    DATASET_ID: ClassVar[str]
+    """The unique identifier for the dataset. Automatically set by __init_subclass__."""
+
     def __init_subclass__(
         cls,
         dataset_id: str | None = None,
@@ -371,8 +316,12 @@ class Dataset:
         dataframe: pd.DataFrame | None = None,
         transforms: list[Transform] | None = None,
         repeats: int = 1,
-    ):
+    ) -> None:
         if self.__class__.COLUMN_NAMES is not None:
+            if dataframe is None:
+                raise ValueError(
+                    f"dataframe cannot be None when COLUMN_NAMES is specified for {self.__class__.__name__}"
+                )
             common = set(self.__class__.COLUMN_NAMES) & set(dataframe.columns)
             if len(common) != len(self.__class__.COLUMN_NAMES):
                 missing = set(self.__class__.COLUMN_NAMES) - common
@@ -384,6 +333,7 @@ class Dataset:
         self.logger = getLogger(__name__)
         self.transforms = transforms
         self.repeats = repeats
+        self.data: list[dict[str, Any]] | None = None
 
     @classmethod
     def load_from_file(
@@ -392,6 +342,7 @@ class Dataset:
         transforms: list[Transform] | None = None,
         format: DatasetFormat | None = None,
         dataset_id: str | None = None,
+        num_repeats: int = 1,
     ) -> "Dataset":
         assert format is None or isinstance(
             format, DatasetFormat
@@ -404,22 +355,58 @@ class Dataset:
         ds_class = cls
         if dataset_id is not None:
             ds_class = Dataset.PREDEFINED[dataset_id]
+
         return ds_class(
             loader.get_dataframe(),
             transforms=transforms,
+            repeats=num_repeats,
         )
 
-    def load(self):
+    def load(
+        self,
+        adapter: "HttpRequestAdapter | None" = None,
+        api_type: APIType | None = None,
+        model_params: ModelParams | None = None,
+        force: bool = False,
+    ):
         """Load the dataset into memory for pre-processing. After transforms are applied,
         the dataset is converted to a contiguous numpy array.
 
         Args:
-            force: If True, reloads even if already loaded (for refreshing data).
+            adapter: If set, will apply the adapter's required transforms to the dataset after any
+                user-defined transforms. (Default: None)
+            api_type: If adapter is not specified, will use the API type to get the transforms for
+                the adapter. (Default: None)
+            force: If True, reloads even if already loaded (for refreshing data). (Default: False)
         """
+        if not force and hasattr(self, "data") and self.data is not None:
+            return
+
         df = self.dataframe
+        if df is None:
+            raise ValueError(
+                f"Cannot load dataset {self.__class__.__name__}: dataframe is None"
+            )
+
+        transforms = []
         if self.transforms is not None:
-            df = apply_transforms(df, self.transforms)
-        self.data = np.ascontiguousarray(df.to_dict(orient="records"))
+            transforms.extend(self.transforms)
+
+        # If adapter is specified, use it to get transforms, otherwise fallback to use APIType to
+        # get transforms.
+        if adapter is not None and model_params is not None:
+            transforms.extend(adapter.dataset_transforms(model_params))
+        elif api_type is not None and model_params is not None:
+            transforms.extend(get_transforms_for_api_type(api_type, model_params))
+
+        if transforms:
+            df = apply_transforms(df, transforms)
+
+        # Convert numpy arrays to lists because msgspec does not support numpy arrays
+        for col in df.columns:
+            if isinstance(df[col].iloc[0], np.ndarray):
+                df[col] = df[col].map(np.ndarray.tolist)
+        self.data = df.to_dict(orient="records")
 
     def load_sample(self, index: int) -> Any:
         """Load a single sample from the dataset by index.
@@ -439,20 +426,44 @@ class Dataset:
             IndexError: If index is out of range.
             IOError: If data cannot be loaded from disk.
         """
+        assert self.data is not None, "Dataset not loaded. Call load() first."
         return self.data[index]
 
     def num_samples(self) -> int:
+        assert self.data is not None, "Dataset not loaded. Call load() first."
         return len(self.data)
+
+    @classmethod
+    def get_dataloader(
+        cls,
+        datasets_dir: Path = Path("datasets"),
+        num_repeats: int = 1,
+        transforms: list[Transform] | None = None,
+        force_regenerate: bool = False,
+        **kwargs,
+    ) -> "Dataset":
+        if not hasattr(cls, "generate"):
+            raise ValueError(
+                f"Dataset {cls.__name__} does not have a generate method and cannot be auto-loaded"
+            )
+
+        if not callable(cls.generate):
+            raise ValueError(
+                f"Dataset {cls.__name__} has a generate method that is not callable and cannot be auto-loaded"
+            )
+
+        df = cls.generate(datasets_dir=datasets_dir, force=force_regenerate, **kwargs)
+        return cls(df, transforms=transforms, repeats=num_repeats)
 
 
 class EmptyDataset(Dataset):
     """Empty dataset to be used as performance dataset when running only accuracy tests."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(None)
 
-    def load_sample(self, index: int):
+    def load_sample(self, index: int) -> None:
         return None
 
-    def num_samples(self):
+    def num_samples(self) -> int:
         return 0

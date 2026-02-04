@@ -6,7 +6,7 @@ A high-performance benchmarking tool for LLM endpoints.
 
 ### Installation
 
-**Requirements**: Python 3.12+ (Python 3.12 is recommended for optimal performance)
+**Requirements**: Python 3.12+ (Python 3.12 is recommended for optimal performance. GIL-less mode in higher Python versions is not yet supported.)
 
 ```bash
 # Clone the repository
@@ -18,12 +18,14 @@ cd endpoints
 python3.12 -m venv venv
 source venv/bin/activate
 
-# Install in development mode
-pip install -e .
-pip install -r requirements/dev.txt
+# As a user
+pip install .
 
-# Install pre-commit hooks
-pre-commit install
+# As a developer
+pip install -e .     # Editable installation
+pip install .[dev]   # For developer tools
+pip install .[test]  # For pytest deps
+pre-commit install   # Git commit hooks
 ```
 
 ### Basic Usage
@@ -37,18 +39,18 @@ inference-endpoint -v info
 
 # Test endpoint connectivity
 inference-endpoint probe \
-  --endpoint http://your-endpoint:8000 \
+  --endpoints http://your-endpoint:8000 \
   --model Qwen/Qwen3-8B
 
 # Run offline benchmark (max throughput - uses all dataset samples)
 inference-endpoint benchmark offline \
-  --endpoint http://your-endpoint:8000 \
+  --endpoints http://your-endpoint:8000 \
   --model Qwen/Qwen3-8B \
   --dataset tests/datasets/dummy_1k.pkl
 
 # Run online benchmark (sustained QPS - requires --target-qps, --load-pattern)
 inference-endpoint benchmark online \
-  --endpoint http://your-endpoint:8000 \
+  --endpoints http://your-endpoint:8000 \
   --model Qwen/Qwen3-8B \
   --dataset tests/datasets/dummy_1k.pkl \
   --load-pattern poisson \
@@ -56,7 +58,7 @@ inference-endpoint benchmark online \
 
 # With explicit sample count
 inference-endpoint benchmark offline \
-  --endpoint http://your-endpoint:8000 \
+  --endpoints http://your-endpoint:8000 \
   --model Qwen/Qwen3-8B \
   --dataset tests/datasets/dummy_1k.pkl \
   --num-samples 5000
@@ -70,7 +72,7 @@ python -m inference_endpoint.testing.echo_server --port 8765 &
 
 # Test with dummy dataset (included in repo)
 inference-endpoint benchmark offline \
-  --endpoint http://localhost:8765 \
+  --endpoints http://localhost:8765 \
   --model Qwen/Qwen3-8B \
   --dataset tests/datasets/dummy_1k.pkl
 
@@ -84,7 +86,7 @@ See [Local Testing Guide](docs/LOCAL_TESTING.md) for detailed instructions.
 
 ```bash
 # Install tests/ and examples/ dependencies
-pip install -r requirements/test.txt
+pip install .[test]
 
 # Run tests (excluding performance and explicit-run tests)
 pytest -m "not performance and not run_explicitly"
@@ -122,11 +124,23 @@ The system follows a modular, event-driven architecture:
 - **Metrics Collector**: Performance measurement and analysis
 - **Configuration Manager**: System configuration (TBD)
 
+## Accuracy Evaluation
+
+You can run accuracy evaluation with Pass@1 scoring by specifying accuracy datasets in the benchmark
+configuration. Currently, Inference Endpoints provides the following pre-defined accuracy benchmarks:
+
+- GPQA (default: GPQA Diamond)
+- AIME (default: AIME 2025)
+- LiveCodeBench (default: lite, release_v6)
+
+However, LiveCodeBench will not work out-of-the-box and requires some additional setup. See the
+[LiveCodeBench](src/inference_endpoint/dataset_manager/predefined/livecodebench/README.md) documentation
+for details and explanations.
+
 ## 🚧 Pending Features
 
 The following features are planned for future releases:
 
-- [ ] **Accuracy Evaluation** - Comprehensive accuracy metrics and validation
 - [ ] **Performance Tuning** - Advanced performance optimization features
 - [ ] **Submission Ruleset Integration** - Full MLPerf submission workflow support
 - [ ] **Documentation Generation and Hosting** - Sphinx-based API documentation with GitHub Pages

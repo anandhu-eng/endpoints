@@ -22,12 +22,18 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
+from typing import ClassVar
 
 import yaml
 from pydantic import BaseModel, Field
 
 from .. import metrics
 from .ruleset_base import BenchmarkSuiteRuleset
+
+
+class SystemDefaults(BaseModel):
+    DEFAULT_TIMEOUT: ClassVar[float] = 300.0
+    DEFAULT_METRIC: ClassVar[metrics.Metric] = metrics.Throughput(0.0)
 
 
 class APIType(str, Enum):
@@ -194,11 +200,38 @@ class Dataset(BaseModel):
 
     name: str
     type: DatasetType
-    path: str
+    path: str | None = None
     format: str | None = None
     samples: int | None = None
     eval_method: EvalMethod | None = None
-    parser: dict | None = None
+    parser: dict[str, str] | None = None
+    accuracy_config: AccuracyConfig | None = None
+
+
+class AccuracyConfig(BaseModel):
+    """Accuracy configuration.
+
+    The eval_method is the method to use to evaluate the accuracy of the model.
+    Currently only "pass_at_1" is supported.
+    The ground_truth is the column in the dataset that contains the ground truth.
+    Defaults to "ground_truth" if not specified.
+    The extractor is the extractor to use to extract the ground truth from the output.
+    Currently "boxed_math_extractor" and "abcd_extractor" are supported.
+    The num_repeats is the number of times to repeat the dataset for evaluation.
+    Defaults to 1 if not specified.
+
+    Example:
+        accuracy_config:
+          eval_method: "pass_at_1"
+          ground_truth: "answer"
+          extractor: "boxed_math_extractor"
+          num_repeats: 5
+    """
+
+    eval_method: str | None = None
+    ground_truth: str | None = None
+    extractor: str | None = None
+    num_repeats: int = 1
 
 
 class RuntimeConfig(BaseModel):
@@ -248,11 +281,22 @@ class ClientSettings(BaseModel):
     Only workers are required to configure the client.
     Timeout is handled by the HTTP client internally.
 
+    Note: for details see src/endpoint_client/config.py
     """
 
-    workers: int = 4
+    # Number of worker processes (-1 for automatic detection)
+    #   - -1 uses min(max(8, loadgen_numa_domain_size - 1), 24)
+    workers: int = -1
+
     record_worker_events: bool = False
     log_level: str = "INFO"
+
+    # Pre-establish TCP connections during init for reuse at runtime.
+    warmup_connections: bool = True
+
+    # Maximum concurrent TCP connections per worker.
+    # -1 = unlimited (bound by system ephemeral port limit)
+    max_connections: int = -1
 
 
 class Settings(BaseModel):
@@ -314,7 +358,7 @@ class EndpointConfig(BaseModel):
     The Default API type is APIType.OPENAI, which refers to the the /v1/chat/completions route.
     """
 
-    endpoint: str | None = None
+    endpoints: list[str] | None = None
     api_key: str | None = None
     api_type: APIType = APIType.OPENAI
 
@@ -338,11 +382,16 @@ class BenchmarkConfig(BaseModel):
     datasets: list[Dataset]
     settings: Settings = Field(default_factory=Settings)
     metrics: Metrics = Field(default_factory=Metrics)
+    # workers are assigned endpoints in a round-robin manner
     endpoint_config: EndpointConfig = Field(default_factory=EndpointConfig)
     report_dir: Path | None = None
-    timeout: int | None = None
+    timeout: float | None = None
     verbose: bool = False
     ensure_submission_checker_compatibility: bool = False
+    # CPU affinity for loadgen and worker processes:
+    #   - True = auto (compute optimal NUMA-aware plan)
+    #   - False = disabled (no CPU pinning)
+    enable_cpu_affinity: bool = True
 
     @classmethod
     def from_yaml_file(cls, path: Path) -> BenchmarkConfig:
@@ -435,9 +484,9 @@ class BenchmarkConfig(BaseModel):
         Raises:
             ValueError: If required fields are missing
         """
-        if not self.endpoint_config.endpoint:
+        if not self.endpoint_config.endpoints:
             raise ValueError(
-                "Endpoint required: specify --endpoint URL or set in YAML config"
+                "Endpoint required: specify --endpoints URL or set in YAML config"
             )
 
         # Model is required for production benchmarks
@@ -487,10 +536,10 @@ class BenchmarkConfig(BaseModel):
         Raises:
             ValueError: If settings are invalid
         """
-        if self.settings.client.workers < 1:
-            raise ValueError(
-                f"workers must be >= 1, got {self.settings.client.workers}"
-            )
+        workers = self.settings.client.workers
+        # -1 means auto-detect, otherwise must be >= 1
+        if workers < -1 or workers == 0:
+            raise ValueError(f"workers must be -1 (auto) or >= 1, got {workers}")
 
     def validate_runtime_settings(self) -> None:
         """Validate runtime settings are reasonable.
@@ -522,9 +571,13 @@ class BenchmarkConfig(BaseModel):
             # Empty datasets is OK for CLI-based benchmarks
             return
 
-        # Check for duplicate dataset names
-        names = [d.name for d in self.datasets]
-        duplicates = [name for name in set(names) if names.count(name) > 1]
+        # Check for duplicate dataset name + type combinations
+        pairs = [(d.name, d.type) for d in self.datasets]
+        duplicates = [
+            f"{name} ({dtype.value})"
+            for name, dtype in set(pairs)
+            if pairs.count((name, dtype)) > 1
+        ]
         if duplicates:
             raise ValueError(f"Duplicate dataset names: {duplicates}")
 

@@ -170,7 +170,7 @@ def generate_ie_config(
                 "name": "comparison-dataset",
                 "type": "performance",
                 "path": str(dataset_path),
-                "format": "jsonl",
+                "format": ".jsonl",
                 "samples": num_requests,
                 "parser": {"prompt": "text_input"},
             }
@@ -184,7 +184,7 @@ def generate_ie_config(
             "load_pattern": {"type": "max_throughput"},
             "client": {"workers": workers},
         },
-        "endpoint_config": {"endpoint": endpoint_url},
+        "endpoint_config": {"endpoints": [endpoint_url]},
         "report_dir": str(report_dir),
         "timeout": timeout,
     }

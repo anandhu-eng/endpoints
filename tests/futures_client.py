@@ -20,11 +20,7 @@ import concurrent.futures
 import logging
 
 from inference_endpoint.core.types import Query, QueryResult, StreamChunk
-from inference_endpoint.endpoint_client.configs import (
-    AioHttpConfig,
-    HTTPClientConfig,
-    ZMQConfig,
-)
+from inference_endpoint.endpoint_client.config import HTTPClientConfig
 from inference_endpoint.endpoint_client.http_client import HTTPEndpointClient
 
 logger = logging.getLogger(__name__)
@@ -33,53 +29,65 @@ logger = logging.getLogger(__name__)
 class FuturesHttpClient(HTTPEndpointClient):
     """
     HTTPEndpointClient with futures-based API for testing.
-    Returns thread-safe futures from issue_query() that can be awaited from any context.
+    Returns thread-safe futures from issue() that can be awaited from any context.
     """
 
     def __init__(
         self,
         config: HTTPClientConfig,
-        aiohttp_config: AioHttpConfig,
-        zmq_config: ZMQConfig,
     ):
         # Auto-starts with own event loop thread (loop=None)
-        super().__init__(config, aiohttp_config, zmq_config)
+        super().__init__(config)
 
         # Start response handler on client's loop
         self._pending: dict[str | int, concurrent.futures.Future] = {}
+        assert (
+            self.loop is not None
+        ), "Client loop should be initialized by parent __init__"
         self._handler_future = asyncio.run_coroutine_threadsafe(
             self._handle_responses(), self.loop
         )
         self._is_shutting_down = False
 
-    def issue_query(self, query: Query) -> concurrent.futures.Future[QueryResult]:
+    # TODO (vir): fix this type ignore since the base class doesn't have a return value
+    def issue(self, query: Query) -> concurrent.futures.Future[QueryResult]:  # type: ignore[override]
         """Issue query and return a future for the result."""
         if self._is_shutting_down:
             raise RuntimeError("Cannot issue query: client is shutting down")
 
         future: concurrent.futures.Future[QueryResult] = concurrent.futures.Future()
         self._pending[query.id] = future
-        super().issue_query(query)
+        super().issue(query)
         return future
 
     async def _handle_responses(self):
         """Route responses to their corresponding futures."""
         while True:
             try:
-                response = await self.try_receive()
+                response = await self.recv()
                 if response is None:
-                    continue
+                    break  # None signals transport closed - exit handler
 
-                future = self._pending[response.id]
                 match response:
                     case StreamChunk(is_complete=False):
-                        pass  # Ignore intermediate stream chunks
+                        # Intermediate stream chunk - future stays pending
+                        pass
+
                     case QueryResult(error=err) if err:
-                        future.set_exception(Exception(err))
-                        del self._pending[response.id]
+                        # Error response - pop and reject future
+                        if future := self._pending.pop(response.id, None):
+                            future.set_exception(Exception(err))
+                        else:
+                            logger.debug(f"Error for unknown request ID: {response.id}")
+
                     case QueryResult():
-                        future.set_result(response)
-                        del self._pending[response.id]
+                        # Success response - pop and resolve future
+                        if future := self._pending.pop(response.id, None):
+                            future.set_result(response)
+                        else:
+                            logger.debug(
+                                f"Response for unknown request ID: {response.id}"
+                            )
 
             except asyncio.CancelledError:
                 break

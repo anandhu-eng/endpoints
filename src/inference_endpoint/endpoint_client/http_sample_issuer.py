@@ -34,7 +34,7 @@ class HttpClientSampleIssuer(SampleIssuer):
 
     Usage:
         # Create HTTP client and sample issuer - auto-initializes
-        client = HTTPEndpointClient(config, aiohttp_config, zmq_config)
+        client = HTTPEndpointClient(config)
         issuer = HttpClientSampleIssuer(client)
 
         # Issue samples
@@ -51,6 +51,7 @@ class HttpClientSampleIssuer(SampleIssuer):
         self.http_client = http_client
 
         # Start response handler task to route completed responses back to SampleEventHandler
+        assert self.http_client.loop is not None
         self._response_task = asyncio.run_coroutine_threadsafe(
             self._handle_responses(), self.http_client.loop
         )
@@ -60,7 +61,8 @@ class HttpClientSampleIssuer(SampleIssuer):
         """Route completed responses to SampleEventHandler."""
         while True:
             try:
-                match response := await self.http_client.try_receive():
+                # TODO(vir): consider using recv() + drain
+                match response := await self.http_client.recv():
                     case StreamChunk(is_complete=False):
                         # NOTE(vir): is_complete=True should not be received, QueryResult is expected instead
                         SampleEventHandler.stream_chunk_complete(response)
@@ -71,8 +73,8 @@ class HttpClientSampleIssuer(SampleIssuer):
                             logger.error(f"Error in request {response.id}: {err}")
 
                     case None:
-                        # No response available, yield to event loop
-                        continue
+                        # Transport closed or shutdown
+                        break
 
                     case _:
                         raise ValueError(f"Unexpected response type: {type(response)}")
@@ -87,18 +89,11 @@ class HttpClientSampleIssuer(SampleIssuer):
     @profile
     def issue(self, sample: Sample):
         """Issue sample to HTTP endpoint."""
-        self.http_client.issue_query(
-            Query(
-                id=sample.uuid,
-                data=sample.data,
-                headers={
-                    "Content-Type": "application/json",
-                    "Accept": "text/event-stream"
-                    if sample.data.get("stream", False)
-                    else "application/json",
-                },
-            )
-        )
+        # NOTE(vir):
+        # If using extra headers (e.g., Authorization), pre-cache them in
+        # worker.py request-template via HttpRequestTemplate.cache_headers()
+        # to avoid per-request encoding overhead at runtime.
+        self.http_client.issue(Query(id=sample.uuid, data=sample.data))
 
     def shutdown(self):
         """

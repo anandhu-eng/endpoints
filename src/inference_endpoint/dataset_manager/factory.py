@@ -19,12 +19,11 @@ TODO: Very simple factory for now. Will be expanded to support multiple formats 
 """
 
 import logging
-from pathlib import Path
 
-from inference_endpoint.dataset_manager.dataset import DatasetFormat
+from inference_endpoint.config.schema import Dataset as DatasetConfig
+from inference_endpoint.dataset_manager.dataset import Dataset, DatasetFormat
 
-from .dataset import Dataset
-from .transforms import AddStaticColumns, ColumnNameRemap
+from .transforms import ColumnRemap, MakeAdapterCompatible, Transform
 
 logger = logging.getLogger(__name__)
 
@@ -40,41 +39,71 @@ class DataLoaderFactory:
     """
 
     @staticmethod
-    def create_loader(
-        dataset_path: Path | str,
-        format: str | None = None,
-        key_maps: list[dict[str, str]] | None = None,
-        metadata: dict | None = None,
-        **kwargs,
-    ) -> Dataset:
+    def create_loader(config: DatasetConfig, num_repeats: int = 1, **kwargs) -> Dataset:
         """Create appropriate dataset loader based on format.
 
         Args:
-            dataset_path: Path to dataset file or directory
-            key_maps: Dictionary of key mappings for the parser
-            metadata: Dictionary of metadata for the loader
-            **kwargs: Additional arguments for specific loaders
-
-        Returns:
-            DataLoader instance
-
-        Raises:
-            ValueError: If format is unsupported
+            config: Dataset configuration
+            num_repeats: Number of times to repeat the dataset
+            **kwargs: Additional keyword arguments to use for predefined datasets. Passed to
+                Dataset.get_dataloader()
         """
-        if format is not None:
-            format = DatasetFormat(format)
+        dataset_path = config.path
+        file_format = config.format
+        remap = config.parser
+        name = config.name
+        preset = None
 
-        if key_maps is None:
-            remap = {"prompt": "text_input"}
-        else:
-            remap = key_maps[0]
+        if "::" in name:
+            parts = name.split("::")
+            if len(parts) != 2:
+                raise ValueError(f"Invalid dataset name: {name}")
+            name = parts[0]
+            preset = parts[1]
 
-        transforms = [ColumnNameRemap(remap)]
-        if metadata is not None:
-            transforms.append(AddStaticColumns(metadata))
+        if name in Dataset.PREDEFINED:
+            ds_cls = Dataset.PREDEFINED[name]
+            preset_transforms = None
+
+            # If preset is provided, search for the preset in the dataset class
+            if preset is not None:
+                if not hasattr(ds_cls, "PRESETS"):
+                    raise ValueError(
+                        f"Dataset {name} does not have preset model transforms"
+                    )
+
+                if not hasattr(ds_cls.PRESETS, preset):
+                    raise ValueError(
+                        f"Dataset {name} does not have a preset model transform for {preset}"
+                    )
+
+                preset_transforms = getattr(ds_cls.PRESETS, preset)()
+            return ds_cls.get_dataloader(
+                transforms=preset_transforms,
+                num_repeats=num_repeats,
+                **kwargs,
+            )
+
+        if name not in Dataset.PREDEFINED and dataset_path is None:
+            raise ValueError(
+                f"Dataset {name} is not predefined and no dataset path provided - predefined datasets are: {list(Dataset.PREDEFINED.keys())}"
+            )
+
+        format_enum: DatasetFormat | None = None
+        if file_format is not None:
+            format_enum = DatasetFormat(file_format)
+
+        transforms: list[Transform] = []
+        if remap is not None:
+            transforms.append(ColumnRemap(remap))  # type: ignore[arg-type]
+        transforms.append(MakeAdapterCompatible())
+
+        assert dataset_path is not None
+        from pathlib import Path
 
         return Dataset.load_from_file(
-            dataset_path,
+            Path(dataset_path),
             transforms=transforms,
-            format=format,
+            format=format_enum,
+            num_repeats=num_repeats,
         )

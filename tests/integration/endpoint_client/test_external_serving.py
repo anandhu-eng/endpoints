@@ -19,14 +19,9 @@ import time
 
 import pytest
 from inference_endpoint.core.types import Query
-from inference_endpoint.endpoint_client.configs import (
-    AioHttpConfig,
-    HTTPClientConfig,
-    ZMQConfig,
-)
+from inference_endpoint.endpoint_client.config import HTTPClientConfig
 
 from tests.futures_client import FuturesHttpClient
-from tests.test_helpers import get_test_socket_path
 
 
 @pytest.mark.asyncio
@@ -34,67 +29,29 @@ from tests.test_helpers import get_test_socket_path
 @pytest.mark.run_explicitly
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("num_requests", [100])
-async def test_external_serving(vllm_docker_server, tmp_path, streaming, num_requests):
+async def test_external_serving(vllm_docker_server, streaming, num_requests):
     """Test high concurrent requests with proper connection management in streaming mode."""
 
     def _create_custom_client(
         vllm_docker_server,
-        tmp_path,
         num_workers=1,
-        zmq_high_water_mark=10000,
-        zmq_io_threads=None,
-        aiohttp_config=None,
     ):
         """Helper method to create a client with custom configuration."""
         http_config = HTTPClientConfig(
-            endpoint_url=f"{vllm_docker_server['url']}/v1/chat/completions",
+            endpoint_urls=[f"{vllm_docker_server['url']}/v1/chat/completions"],
             num_workers=num_workers,
+            max_connections=50,
+            warmup_connections=False,
         )
 
-        zmq_config_kwargs = {
-            "zmq_request_queue_prefix": get_test_socket_path(
-                tmp_path, "custom", "_req"
-            ),
-            "zmq_response_queue_addr": get_test_socket_path(
-                tmp_path, "custom", "_resp"
-            ),
-            "zmq_readiness_queue_addr": get_test_socket_path(
-                tmp_path, "custom", "_ready"
-            ),
-            "zmq_high_water_mark": zmq_high_water_mark,
-        }
-        if zmq_io_threads is not None:
-            zmq_config_kwargs["zmq_io_threads"] = zmq_io_threads
+        # TODO(vir):
+        # verify if this still works, custom http doesnt really support timeouts
+        return FuturesHttpClient(config=http_config)
 
-        zmq_config = ZMQConfig(**zmq_config_kwargs)
-
-        # Use provided aiohttp_config or create default
-        if aiohttp_config is None:
-            aiohttp_config = AioHttpConfig()
-
-        return FuturesHttpClient(
-            config=http_config,
-            aiohttp_config=aiohttp_config,
-            zmq_config=zmq_config,
-        )
-
-    # Configure aiohttp with connection limits to prevent "too many open files"
-    # Limit concurrent connections to avoid exceeding system file descriptor limits
-    aiohttp_config = AioHttpConfig(
-        tcp_connector_limit=50,  # Total connection pool limit
-        tcp_connector_limit_per_host=50,  # Limit per host (vLLM server)
-        tcp_connector_force_close=False,  # Enable connection pooling/reuse
-        client_timeout_total=300.0,
-        client_timeout_connect=30.0,
-        client_timeout_sock_read=60.0,
-    )
-
-    # create client with unlimited concurrency
+    # create client
     client = _create_custom_client(
         vllm_docker_server,
-        tmp_path,
         num_workers=1,
-        aiohttp_config=aiohttp_config,
     )
 
     try:
@@ -110,7 +67,7 @@ async def test_external_serving(vllm_docker_server, tmp_path, streaming, num_req
                     "stream": streaming,
                 },
             )
-            future = client.issue_query(query)
+            future = client.issue(query)
             futures.append(future)
 
         # Wait for all futures to complete

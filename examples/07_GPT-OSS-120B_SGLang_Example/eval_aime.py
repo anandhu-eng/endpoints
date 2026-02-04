@@ -57,7 +57,7 @@ if __name__ == "__main__":
         "--report-dir",
         type=Path,
         help="Path to the report directory",
-        default="gpqa_sglang_report",
+        default="sglang_accuracy_report",
     )
     args = parser.parse_args()
     main(args)

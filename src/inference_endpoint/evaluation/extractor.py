@@ -14,8 +14,10 @@
 # limitations under the License.
 
 
+import inspect
 import re
 from abc import ABC, abstractmethod
+from typing import ClassVar
 
 
 class Extractor(ABC):
@@ -25,13 +27,67 @@ class Extractor(ABC):
     numeric value plain or inside a LaTeX block.
     """
 
+    # Provide a registration and lookup system for derived Extractor classes by name.
+    # This allows registering new extractors that can be instantiated via config/lookup.
+    PREDEFINED: ClassVar[dict[str, type["Extractor"]]] = {}
+
+    EXTRACTOR_ID: ClassVar[str]
+    """The unique identifier for the extractor. Automatically set by __init_subclass__."""
+
+    def __init_subclass__(
+        cls,
+        extractor_id: str | None = None,
+        **kwargs,
+    ):
+        super().__init_subclass__(**kwargs)
+
+        if not inspect.isabstract(cls):
+            if extractor_id is None:
+                extractor_id = cls.__name__
+            cls.EXTRACTOR_ID = extractor_id
+            Extractor.PREDEFINED[extractor_id] = cls
+
+    @classmethod
+    def get(cls, name: str) -> type["Extractor"]:
+        """Look up an Extractor subclass by its registered name.
+
+        Args:
+            name: str, the registered extractor name
+
+        Returns:
+            Extractor subclass
+
+        Raises:
+            KeyError: If no extractor with the given name is found
+        """
+        try:
+            return Extractor.PREDEFINED[name]
+        except KeyError as e:
+            raise KeyError(
+                f"Extractor '{name}' is not registered - available extractors: {Extractor.available_extractors()}"
+            ) from e
+
+    @classmethod
+    def available_extractors(cls) -> list[str]:
+        """Return the list of registered extractor names."""
+        return list(Extractor.PREDEFINED.keys())
+
     @classmethod
     @abstractmethod
-    def extract(cls, text: str) -> str | None:
+    def extract(cls, text: str, default: str | None = None) -> str | None:
+        """Extract value from text.
+
+        Args:
+            text: The text to extract from
+            default: Default value to return if extraction fails (instead of None)
+
+        Returns:
+            Extracted value, or default if extraction fails, or None if no default provided
+        """
         raise NotImplementedError
 
 
-class ABCDExtractor(Extractor):
+class ABCDExtractor(Extractor, extractor_id="abcd_extractor"):
     """Extract ABCD multiple choice answer from response text.
     Based on OpenAI's extract_abcd function from GPT-OSS.
     Reference: https://github.com/openai/gpt-oss/blob/main/gpt_oss/evals/abcd_grader.py
@@ -131,7 +187,7 @@ class ABCDExtractor(Extractor):
     ]
 
     @classmethod
-    def extract(cls, text: str) -> str | None:
+    def extract(cls, text: str, default: str | None = None) -> str | None:
         matches = []
         for prio, pat in enumerate(cls.PATTERNS):
             m = pat.search(text)
@@ -161,17 +217,17 @@ class ABCDExtractor(Extractor):
             abcd_choice = stripped[0].upper()
             return choice_map[abcd_choice]
 
-        return ""
+        return default if default is not None else ""
 
 
-class BoxedMathExtractor(Extractor):
+class BoxedMathExtractor(Extractor, extractor_id="boxed_math_extractor"):
     """Extract boxed math answer from response text.
     Based on OpenAI's extract_boxed_math function from GPT-OSS.
     https://github.com/openai/gpt-oss/blob/main/gpt_oss/evals/aime_eval.py
     """
 
     @classmethod
-    def extract(cls, text: str) -> str | None:
+    def extract(cls, text: str, default: str | None = None) -> str | None:
         pattern = r"boxed{(.*?)}|framebox{(.*?)}"
         matches = re.findall(pattern, text, re.DOTALL)
         if matches:
@@ -184,4 +240,64 @@ class BoxedMathExtractor(Extractor):
         matches = re.findall(pattern, text, re.DOTALL)
         if matches:
             return matches[-1]
-        return None
+        return default
+
+
+class IdentityExtractor(Extractor, extractor_id="identity_extractor"):
+    """Extract identity answer from response text."""
+
+    @classmethod
+    def extract(cls, text: str, _: str | None = None) -> str | None:
+        return text
+
+
+class PythonCodeExtractor(Extractor, extractor_id="python_code_extractor"):
+    """Extract Python code from markdown code blocks.
+    Based on parse_code function from GPT-OSS livecodebench_eval.py.
+    Reference: https://github.com/openai/gpt-oss/blob/main/gpt_oss/evals/livecodebench_eval.py
+
+    Extracts Python code from ```python or ``` code blocks.
+    Priority:
+    1. Last ```python block
+    2. Last plain ``` block
+
+    Args:
+        text: Response text containing code blocks
+        default: Default value to return if extraction fails (instead of None)
+
+    Returns:
+        Extracted Python code, or default if provided and extraction fails, or None otherwise
+
+    Examples:
+        >>> PythonCodeExtractor.extract("```python\\ndef foo():\\n    pass\\n```")
+        'def foo():\\n    pass'
+        >>> PythonCodeExtractor.extract("```\\nprint('hello')\\n```")
+        "print('hello')"
+        >>> PythonCodeExtractor.extract("no code here", default="# FAILED")
+        '# FAILED'
+    """
+
+    @classmethod
+    def extract(cls, text: str, default: str | None = None) -> str | None:
+        if not text or not isinstance(text, str):
+            return default
+
+        text = text.strip()
+        if not text:
+            return default
+
+        # Try ```python blocks first (most specific)
+        python_matches = list(re.finditer(r"```python(.*?)```", text, re.DOTALL))
+        if python_matches:
+            return python_matches[-1].group(1).strip()
+
+        # Fall back to plain ``` blocks
+        plain_matches = list(re.finditer(r"```(.*?)```", text, re.DOTALL))
+        if plain_matches:
+            # Get the last match
+            code = plain_matches[-1].group(1).strip()
+            # Remove language tag if present (e.g., ```python\n or ```py\n)
+            code = re.sub(r"^(?:python|py)\s*\n", "", code, flags=re.IGNORECASE)
+            return code
+
+        return default

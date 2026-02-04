@@ -21,11 +21,14 @@ Benchmark command implementation."""
 import argparse
 import json
 import logging
+import os
 import shutil
 import signal
 import tempfile
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from urllib.parse import urljoin
 
 from tqdm import tqdm
@@ -42,7 +45,6 @@ from inference_endpoint.config.schema import (
     APIType,
     BenchmarkConfig,
     ClientSettings,
-    Dataset,
     DatasetType,
     EndpointConfig,
     LoadPattern,
@@ -53,19 +55,23 @@ from inference_endpoint.config.schema import (
     RuntimeConfig,
     Settings,
     StreamingMode,
+    SystemDefaults,
     TestMode,
     TestType,
 )
+from inference_endpoint.config.schema import (
+    Dataset as DatasetConfig,
+)
 from inference_endpoint.config.yaml_loader import ConfigError, ConfigLoader
 from inference_endpoint.core.types import QueryResult
+from inference_endpoint.dataset_manager.dataset import Dataset
 from inference_endpoint.dataset_manager.factory import DataLoaderFactory
-from inference_endpoint.endpoint_client.configs import (
-    AioHttpConfig,
-    HTTPClientConfig,
-    ZMQConfig,
-)
+from inference_endpoint.endpoint_client.config import HTTPClientConfig
+from inference_endpoint.endpoint_client.cpu_affinity import pin_loadgen
 from inference_endpoint.endpoint_client.http_client import HTTPEndpointClient
 from inference_endpoint.endpoint_client.http_sample_issuer import HttpClientSampleIssuer
+from inference_endpoint.evaluation import Extractor
+from inference_endpoint.evaluation.scoring import Scorer
 from inference_endpoint.exceptions import (
     ExecutionError,
     InputValidationError,
@@ -137,10 +143,21 @@ class ResponseCollector:
             if self.pbar:
                 self.pbar.set_postfix(refresh=True, errors=len(self.errors))
         elif self.collect_responses:
-            self.responses[result.id] = result.response_output
+            self.responses[result.id] = result.get_response_output_string()
 
         if self.pbar:
             self.pbar.update(1)
+
+
+@dataclass
+class AccuracyConfiguration:
+    scorer: type[Scorer]
+    extractor: type[Extractor]
+    dataset_name: str
+    dataset: Dataset
+    report_dir: os.PathLike
+    ground_truth_column: str | None
+    num_repeats: int
 
 
 async def run_benchmark_command(args: argparse.Namespace) -> None:
@@ -219,9 +236,7 @@ async def run_benchmark_command(args: argparse.Namespace) -> None:
     elif benchmark_mode_str in ("offline", "online"):
         # ===== CLI MODE - Build config from CLI params =====
         benchmark_mode = TestType(benchmark_mode_str)  # TestType values are lowercase
-        effective_config: BenchmarkConfig = _build_config_from_cli(
-            args, benchmark_mode_str
-        )
+        effective_config = _build_config_from_cli(args, benchmark_mode_str)
         test_mode = (
             TestMode(args.mode) if getattr(args, "mode", None) else TestMode.PERF
         )
@@ -289,7 +304,7 @@ def _build_config_from_cli(
         version="1.0",
         type=TestType.OFFLINE if benchmark_mode == "offline" else TestType.ONLINE,
         datasets=[
-            Dataset(
+            DatasetConfig(
                 name=args.dataset.stem,
                 type=DatasetType.PERFORMANCE,
                 path=str(args.dataset),
@@ -314,8 +329,10 @@ def _build_config_from_cli(
                 dataloader_random_seed=42,
             ),
             client=ClientSettings(
-                workers=args.workers if args.workers else 4,
+                workers=args.workers if args.workers else -1,
                 log_level="DEBUG" if verbose_level >= 2 else "INFO",
+                warmup_connections=getattr(args, "warmup_connections", True),
+                max_connections=getattr(args, "max_connections", None) or -1,
             ),
         ),
         model_params=ModelParams(
@@ -331,58 +348,16 @@ def _build_config_from_cli(
             streaming=StreamingMode(getattr(args, "streaming", "auto")),
         ),
         endpoint_config=EndpointConfig(
-            endpoint=args.endpoint, api_key=args.api_key, api_type=api_type
+            endpoints=[e.strip() for e in args.endpoints.split(",") if e.strip()],
+            api_key=args.api_key,
+            api_type=api_type,
         ),
         metrics=Metrics(),
-        baseline=None,  # CLI mode doesn't use baseline
         report_dir=report_dir,
         timeout=timeout,
         verbose=verbose_level > 0,
         ensure_submission_checker_compatibility=ensure_submission_checker_compatibility,
     )
-
-
-def _get_dataset_path(args: argparse.Namespace, config: BenchmarkConfig) -> Path:
-    """Get dataset path from CLI args or config.
-
-    CURRENT LIMITATION: Only supports single dataset execution.
-    Priority: CLI args > config datasets[0]
-
-    Args:
-        args: Command arguments
-        config: BenchmarkConfig
-
-    Returns:
-        Path to dataset file
-
-    Raises:
-        InputValidationError: If no dataset specified or file doesn't exist
-
-    TODO: Multi-dataset support
-    When implemented, this should:
-    1. Return list[Path] for multiple datasets
-    2. Validate all dataset paths exist
-    3. Support dataset interleaving strategies
-    """
-    if hasattr(args, "dataset") and args.dataset:
-        dataset_path = Path(args.dataset)
-    else:
-        # TODO: Multi-dataset - currently just picks single dataset
-        single_dataset = config.get_single_dataset()
-        if single_dataset:
-            dataset_path = Path(single_dataset.path)
-        else:
-            logger.error("Dataset required: --dataset PATH or specify in config")
-            raise InputValidationError(
-                "Dataset required: --dataset PATH or specify in config"
-            )
-
-    # Validate file exists
-    if not dataset_path.exists():
-        logger.error(f"Dataset not found: {dataset_path}")
-        raise InputValidationError(f"Dataset not found: {dataset_path}")
-
-    return dataset_path
 
 
 def _run_benchmark(
@@ -430,6 +405,10 @@ def _run_benchmark(
         ExecutionError: If benchmark execution fails after successful setup.
         KeyboardInterrupt: If user interrupts with Ctrl+C (re-raised for CLI handler).
     """
+    # CPU affinity: compute plan and pin loadgen
+    affinity_plan = None
+    if config.enable_cpu_affinity:
+        affinity_plan = pin_loadgen(config.settings.client.workers)
 
     # Load tokenizer if model name is provided
     # Priority: CLI args (offline/online modes) > config submission_ref (from-config mode)
@@ -437,8 +416,7 @@ def _run_benchmark(
     model_name = config.model_params.name
     if not model_name and config.submission_ref:
         model_name = config.submission_ref.model
-    if not model_name and config.model_params.name:
-        model_name = config.model_params.name
+        config.model_params.name = model_name
 
     if config.report_dir:
         report_dir = Path(config.report_dir)
@@ -447,8 +425,6 @@ def _run_benchmark(
 
     report_dir.mkdir(parents=True, exist_ok=True)
     config.to_yaml_file(report_dir / "config.yaml")
-
-    max_tokens = config.model_params.max_new_tokens
 
     if model_name:
         try:
@@ -464,10 +440,6 @@ def _run_benchmark(
         # Throw exception if no model name is provided
         raise InputValidationError("No model name provided")
 
-    # Get dataset - from CLI or from config
-    # TODO: Dataset Logic is not yet fully implemented
-    dataset_path = config.datasets[0].path
-
     # Determine if streaming should be enabled based on config
     streaming_mode = config.model_params.streaming
 
@@ -481,35 +453,81 @@ def _run_benchmark(
         enable_streaming = benchmark_mode == TestType.ONLINE
         if enable_streaming:
             logger.info("Streaming: enabled (auto, online mode)")
+            config.model_params.streaming = StreamingMode.ON
         else:
             logger.info("Streaming: disabled (auto, offline mode)")
+            config.model_params.streaming = StreamingMode.OFF
+
+    # Get dataset - from CLI or from config
+    # TODO: Dataset Logic is not yet fully implemented
+
+    accuracy_configs = [
+        config for config in config.datasets if config.type == DatasetType.ACCURACY
+    ]
+    performance_configs = [
+        config for config in config.datasets if config.type == DatasetType.PERFORMANCE
+    ]
+    if not performance_configs and not accuracy_configs:
+        raise InputValidationError("No performance or accuracy datasets provided")
+    accuracy_datasets = []
+    eval_configs = []
+    if len(accuracy_configs) > 0:
+        # Pack the evaluation parameters for each accuracy dataset
+        for acc_config in accuracy_configs:
+            # Type narrowing: ensure accuracy_config is not None
+            assert (
+                acc_config.accuracy_config is not None
+            ), f"accuracy_config must be set for dataset {acc_config.name}"
+            # Type narrowing: ensure required fields are not None
+            assert (
+                acc_config.accuracy_config.eval_method is not None
+            ), f"eval_method must be set for dataset {acc_config.name}"
+            assert (
+                acc_config.accuracy_config.extractor is not None
+            ), f"extractor must be set for dataset {acc_config.name}"
+
+            dataset = DataLoaderFactory.create_loader(
+                acc_config, num_repeats=acc_config.accuracy_config.num_repeats
+            )
+            accuracy_datasets.append(dataset)
+            # TODO add tests and defaults
+            eval_configs.append(
+                AccuracyConfiguration(
+                    Scorer.get(acc_config.accuracy_config.eval_method),
+                    Extractor.get(acc_config.accuracy_config.extractor),
+                    acc_config.name,
+                    dataset,
+                    report_dir,
+                    acc_config.accuracy_config.ground_truth,
+                    acc_config.accuracy_config.num_repeats,
+                )
+            )
+            dataset.load(
+                api_type=config.endpoint_config.api_type,
+                model_params=config.model_params,
+            )
+            logger.info(f"Loaded {dataset} - {dataset.num_samples()} samples")
+
+    else:
+        logger.info("No accuracy datasets provided")
+    if len(performance_configs) > 1:
+        logger.warning(
+            "Multiple performance datasets provided, only the first one will be used"
+        )
 
     try:
-        if any(d.parser for d in config.datasets):
-            key_maps = [d.parser for d in config.datasets]
-        else:
-            key_maps = None
-        logger.info(f"Parser key maps: {key_maps}")
-
         dataloader = DataLoaderFactory.create_loader(
-            dataset_path,
-            format=config.datasets[0].format,
-            key_maps=key_maps,
-            metadata={
-                "model": model_name,
-                "stream": enable_streaming,
-                "max_completion_tokens": max_tokens,
-                "temperature": config.model_params.temperature,
-                "top_p": config.model_params.top_p,
-                "top_k": config.model_params.top_k,
-                "repetition_penalty": config.model_params.repetition_penalty,
-            },
+            performance_configs[0]
+        )  # Do not repeat perf datasets
+        dataloader.load(
+            api_type=config.endpoint_config.api_type, model_params=config.model_params
         )
-        dataloader.load()
         logger.info(f"Loaded {dataloader.num_samples()} samples")
     except FileNotFoundError as e:
-        logger.error(f"Dataset file not found: {dataset_path}")
-        raise InputValidationError(f"Dataset file not found: {dataset_path}") from e
+        logger.error(f"Dataset file not found: {performance_configs[0].path}")
+        raise InputValidationError(
+            f"Dataset file not found: {performance_configs[0].path}"
+        ) from e
     except Exception as e:
         logger.error("Dataset load failed")
         raise SetupError(f"Failed to load dataset: {e}") from e
@@ -521,6 +539,10 @@ def _run_benchmark(
 
     # Calculate and display expected sample count
     total_samples = rt_settings.total_samples_to_issue()
+    if accuracy_datasets is not None:
+        total_samples += sum(
+            [dataset.num_samples() * dataset.repeats for dataset in accuracy_datasets]
+        )
     duration_s = rt_settings.min_duration_ms / 1000
 
     logger.info(
@@ -541,7 +563,9 @@ def _run_benchmark(
 
     # Setup response collector
     pbar = tqdm(
-        desc=f"{model_name} (Streaming: {enable_streaming})", total=total_samples
+        desc=f"{model_name} (Streaming: {enable_streaming})",
+        total=total_samples,
+        smoothing=0,  # smoothing=0 shows average instead of EMA
     )
     response_collector = ResponseCollector(
         collect_responses=collect_responses, pbar=pbar
@@ -551,31 +575,29 @@ def _run_benchmark(
     )
 
     # Create endpoint client
-    endpoint = config.endpoint_config.endpoint
+    endpoints = config.endpoint_config.endpoints
+    assert endpoints is not None
     num_workers = config.settings.client.workers
 
-    logger.info(f"Connecting: {endpoint}")
+    logger.info(f"Connecting: {endpoints}")
     tmp_dir = tempfile.mkdtemp(prefix="inference_endpoint_")
 
     try:
+        api_type: APIType = config.endpoint_config.api_type
+        assert api_type is not None
         http_config = HTTPClientConfig(
-            endpoint_url=urljoin(
-                endpoint, config.endpoint_config.api_type.default_route()
-            ),
-            api_type=config.endpoint_config.api_type,
+            endpoint_urls=[urljoin(e, api_type.default_route()) for e in endpoints],
+            api_type=api_type,
             num_workers=num_workers,
             record_worker_events=config.settings.client.record_worker_events,
             event_logs_dir=report_dir,
             log_level=config.settings.client.log_level,
+            cpu_affinity=affinity_plan,
+            warmup_connections=config.settings.client.warmup_connections,
+            max_connections=config.settings.client.max_connections,
+            api_key=config.endpoint_config.api_key,
         )
-        aiohttp_config = AioHttpConfig()
-        zmq_config = ZMQConfig(
-            zmq_request_queue_prefix=f"ipc://{tmp_dir}/req",
-            zmq_response_queue_addr=f"ipc://{tmp_dir}/resp",
-            zmq_readiness_queue_addr=f"ipc://{tmp_dir}/ready",
-        )
-
-        http_client = HTTPEndpointClient(http_config, aiohttp_config, zmq_config)
+        http_client = HTTPEndpointClient(http_config)
         sample_issuer = HttpClientSampleIssuer(http_client)
 
     except Exception as e:
@@ -595,7 +617,10 @@ def _run_benchmark(
             name=f"cli_benchmark_{uuid.uuid4().hex[0:8]}",
             report_dir=report_dir,
             tokenizer_override=tokenizer,
-            max_shutdown_timeout_s=config.timeout if config.timeout else None,
+            accuracy_datasets=accuracy_datasets,
+            max_shutdown_timeout_s=config.timeout
+            if config.timeout
+            else SystemDefaults.DEFAULT_TIMEOUT,
             dump_events_log=True,
         )
 
@@ -612,6 +637,28 @@ def _run_benchmark(
         finally:
             # Always restore original handler
             signal.signal(signal.SIGINT, old_handler)
+        accuracy_scores = {}
+        for eval_config in eval_configs:
+            scorer_instance = eval_config.scorer(
+                eval_config.dataset_name,
+                eval_config.dataset,
+                eval_config.report_dir,
+                extractor=eval_config.extractor,
+                ground_truth_column=eval_config.ground_truth_column,
+            )
+            score, n_repeats = scorer_instance.score()
+            assert eval_config.dataset.data is not None
+            accuracy_scores[eval_config.dataset_name] = {
+                "dataset_name": eval_config.dataset_name,
+                "num_samples": len(eval_config.dataset.data),
+                "extractor": eval_config.extractor.__name__,
+                "ground_truth_column": eval_config.ground_truth_column,
+                "score": score,
+                "n_repeats": n_repeats,
+            }
+            logger.info(
+                f"Score for {eval_config.dataset_name}: {score} ({n_repeats} repeats)"
+            )
 
         # Prefer authoritative metrics from the session report
         report = getattr(sess, "report", None)
@@ -644,9 +691,9 @@ def _run_benchmark(
                     logger.warning(f"  ... +{len(response_collector.errors) - 3} more")
 
         try:
-            results = {
+            results: dict[str, Any] = {
                 "config": {
-                    "endpoint": endpoint,
+                    "endpoint": endpoints,
                     "mode": test_mode,
                     "target_qps": target_qps,
                 },
@@ -658,6 +705,8 @@ def _run_benchmark(
                     "qps": estimated_qps,
                 },
             }
+            if accuracy_scores:
+                results["accuracy_scores"] = accuracy_scores
             if collect_responses:
                 results["responses"] = response_collector.responses
             # Always save all errors (useful for debugging)
