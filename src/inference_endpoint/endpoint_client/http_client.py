@@ -57,17 +57,18 @@ class AsyncHttpEndpointClient:
         self._worker_cycle = cycle(range(self.config.num_workers))
 
         # Use provided loop or create own
+        self._owns_loop = loop is None
+        self.loop: asyncio.AbstractEventLoop | None = loop
+        self._loop_thread: threading.Thread | None = None
         if loop is None:
             self.loop = uvloop.new_event_loop()
+            assert self.loop is not None
             self._loop_thread = threading.Thread(
                 target=self.loop.run_forever,
                 daemon=True,
                 name=f"HttpClient-{self.client_id}",
             )
             self._loop_thread.start()
-        else:
-            self.loop = loop
-            self._loop_thread = None
 
         # Use eager task factory for immediate coroutine execution
         # Tasks start executing synchronously until first await
@@ -75,11 +76,15 @@ class AsyncHttpEndpointClient:
         # NOTE(vir):
         # CRITICAL for http-client performance
         # ensures issue() does not get starved by other threads under load
-        self.loop.set_task_factory(asyncio.eager_task_factory)
+        assert self.loop is not None
+        self.loop.set_task_factory(asyncio.eager_task_factory)  # type: ignore[arg-type]
 
         # Initialize on event loop
         asyncio.run_coroutine_threadsafe(self._initialize(), self.loop).result()
 
+        assert self.config.adapter is not None
+        assert self.config.accumulator is not None
+        assert self.config.worker_pool_transport is not None
         logger.info(
             f"EndpointClient initialized with num_workers={self.config.num_workers}, "
             f"endpoints={self.config.endpoint_urls}, "
@@ -90,9 +95,12 @@ class AsyncHttpEndpointClient:
 
     async def _initialize(self) -> None:
         """Initialize worker manager and transports."""
-        self._shutdown_event = asyncio.Event()
+        # CPython GIL provides atomic boolean writes, no need for asyncio.Event()
+        self._shutdown: bool = False
+        self._dropped_requests: int = 0
 
         # WorkerManager creates and owns all transports
+        assert self.loop is not None
         self.worker_manager = WorkerManager(self.config, self.loop)
         await self.worker_manager.initialize()
         self.pool = self.worker_manager.pool_transport
@@ -102,9 +110,11 @@ class AsyncHttpEndpointClient:
         Issue query to endpoint (round-robin to workers).
         Non-blocking - buffers if socket would block.
         """
-        # TODO(vir): handle gracefully
-        assert not self._shutdown_event.is_set(), "Client is shutting down"
-        self.pool.send(next(self._worker_cycle), query)
+        if self._shutdown:
+            # NOTE(vir): drop requests during shutdown
+            self._dropped_requests += 1
+        else:
+            self.pool.send(next(self._worker_cycle), query)
 
     def poll(self) -> QueryResult | StreamChunk | None:
         """Non-blocking. Returns response if available, None otherwise."""
@@ -124,15 +134,19 @@ class AsyncHttpEndpointClient:
     async def shutdown(self) -> None:
         """Gracefully shutdown client."""
         logger.info(f"[{self.client_id}] Shutting down...")
-        self._shutdown_event.set()
+        self._shutdown = True
 
         # Shutdown workers
         await self.worker_manager.shutdown()
 
-        # Stop event loop if we own it
-        if self._loop_thread is not None:
+        # Stop event loop if we own it (scheduled to run after this coroutine completes)
+        if self._owns_loop and self.loop is not None:
             self.loop.call_soon(self.loop.stop)
 
+        if self._dropped_requests > 0:
+            logger.info(
+                f"[{self.client_id}] Dropped {self._dropped_requests} requests during shutdown"
+            )
         logger.info(f"[{self.client_id}] Shutdown complete.")
 
 
@@ -149,10 +163,12 @@ class HTTPEndpointClient(AsyncHttpEndpointClient):
     def issue(self, query: Query) -> None:  # type: ignore[override]
         """Issue query."""
         # Schedule on event loop thread
+        assert self.loop is not None
         self.loop.call_soon_threadsafe(
             lambda: super(HTTPEndpointClient, self).issue(query)
         )
 
     def shutdown(self) -> None:  # type: ignore[override]
-        """Sync shutdown."""
+        """Sync shutdown wrapper - blocks until base class async shutdown completes."""
+        assert self.loop is not None
         asyncio.run_coroutine_threadsafe(super().shutdown(), self.loop).result()

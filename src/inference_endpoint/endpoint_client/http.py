@@ -21,6 +21,7 @@ import asyncio
 import logging
 import select
 import socket
+import ssl
 import time
 from collections import OrderedDict
 from collections.abc import AsyncGenerator
@@ -48,11 +49,12 @@ class _SocketConfig:
     # instead of the default delayed ACK behavior.
     TCP_QUICKACK: int = 1
 
-    # Connection keepalive settings for long-lived connections
+    # Connection keepalive-probe settings for long-lived connections
+    # client kernel sends probe, server's kernel ACKs - no application overhead
     SO_KEEPALIVE: int = 1  # Enable keepalive at socket level
-    TCP_KEEPIDLE: int = 30  # Start keepalive probes after 30 seconds idle
-    TCP_KEEPCNT: int = 1  # 1 failed keepalive probes = dead
-    TCP_KEEPINTVL: int = 30  # Send probes every 30 seconds
+    TCP_KEEPIDLE: int = 1  # Probe after 1s idle
+    TCP_KEEPCNT: int = 1  # 1 failed probe = dead
+    TCP_KEEPINTVL: int = 1  # 1s between probes
 
     # Make sure socket buffers are never the bottle neck
     # With HTTP/1.1, a TCP socket will only be used for a single request
@@ -62,12 +64,10 @@ class _SocketConfig:
     SO_RCVBUF: int = 1024 * 1024 * 4  # 4MB receive buffer
     SO_SNDBUF: int = 1024 * 1024 * 4  # 4MB send buffer
 
-    # Linux-specific
-    # Causes socket to be closed if no data is received for the specified time
-    #
-    # WARNING:
-    # offline-mode might suffer dropped conections due to this timeout if set
-    TCP_USER_TIMEOUT: int = 0  # disabled default since we manage keepalive ourselves
+    # Linux-specific:
+    # kernel closes socket if sent data not ACKed within timeout
+    # ie. timeout on unACKed sent data
+    TCP_USER_TIMEOUT: int = 0
 
     @classmethod
     def apply(cls, sock: socket.socket) -> None:
@@ -179,7 +179,12 @@ class HttpResponseProtocol(asyncio.Protocol):
     # asyncio.Protocol callbacks
     # -------------------------------------------------------------------------
 
-    def connection_made(self, transport: asyncio.Transport) -> None:
+    def connection_made(self, transport: asyncio.Transport) -> None:  # type: ignore[override]
+        """Called by asyncio when connection is established.
+
+        Note: We intentionally narrow the transport type from BaseTransport to Transport
+        for better type safety, as we know we're using TCP transports with specific features.
+        """
         self._transport = transport
         self._parser = httptools.HttpResponseParser(self)
 
@@ -219,8 +224,23 @@ class HttpResponseProtocol(asyncio.Protocol):
         self._signal_stream_end()
 
     def eof_received(self) -> bool | None:
-        # Return True to keep transport open despite EOF
-        # Connection will fail on next write if server truly closed
+        """Handle server EOF (FIN packet).
+
+        CRITICAL:
+        Must mark connection as lost to prevent reuse of half-closed sockets.
+
+        TCP half-closed behavior:
+        - Server sends FIN → client receives EOF
+        - Client can STILL WRITE (client→server direction still open)
+        - But server won't respond (server→client closed)
+        - If we reuse this connection: write succeeds, read HANGS FOREVER
+
+        See: https://bugs.python.org/issue44805 (asyncio EOF detection on reused sockets)
+        See: https://superuser.com/questions/298919/tcp-half-open-vs-half-closed
+        """
+        self._connection_lost = True
+        self._signal_stream_end()  # Unblock any waiting iter_body()
+        # Return True to keep transport open briefly for pending data processing
         return True
 
     # -------------------------------------------------------------------------
@@ -238,6 +258,8 @@ class HttpResponseProtocol(asyncio.Protocol):
         )
 
     def on_headers_complete(self) -> None:
+        # Parser is always set when this callback is invoked by httptools
+        assert self._parser is not None
         self._status_code = self._parser.get_status_code()
         # Check if server wants to close connection (Connection: close or HTTP/1.0)
         self._should_close = not self._parser.should_keep_alive()
@@ -341,7 +363,14 @@ class HttpResponseProtocol(asyncio.Protocol):
 class PooledConnection:
     """A pooled TCP connection with its protocol."""
 
-    __slots__ = ("transport", "protocol", "created_at", "last_used", "in_use")
+    __slots__ = (
+        "transport",
+        "protocol",
+        "created_at",
+        "last_used",
+        "in_use",
+        "idle_time_on_acquire",
+    )
 
     def __init__(
         self,
@@ -354,9 +383,16 @@ class PooledConnection:
         self.created_at = created_at
         self.last_used = created_at
         self.in_use = True
+        self.idle_time_on_acquire = 0.0
 
     def is_alive(self) -> bool:
-        """Check if the connection is still usable."""
+        """Check if the connection is still usable.
+
+        Returns False if:
+        - Transport is None (never connected or already cleaned up)
+        - Protocol received EOF (server sent FIN - half-closed)
+        - Transport is closing (local close initiated)
+        """
         return (
             self.transport is not None
             and not self.protocol._connection_lost
@@ -411,12 +447,15 @@ class ConnectionPool:
         port: int,
         loop: asyncio.AbstractEventLoop,
         max_connections: int | None = None,  # None means no limit
+        max_idle_time: float = 4.0,  # Discard connections idle longer than this
+        ssl_context: ssl.SSLContext | None = None,
     ):
         self._host = host
         self._port = port
         self._loop = loop
         self._max_connections = max_connections
-
+        self._max_idle_time = max_idle_time
+        self._ssl_context = ssl_context
         # Connection tracking
         self._idle_stack: list[PooledConnection] = []
         self._all_connections: set[PooledConnection] = set()
@@ -427,10 +466,18 @@ class ConnectionPool:
 
     def _try_get_idle(self) -> PooledConnection | None:
         """Try to get a usable idle connection, cleaning up dead ones."""
+        now = time.monotonic()
         while self._idle_stack:
             conn = self._idle_stack.pop()
+            # Proactively discard connections idle longer than max_idle_time
+            # to avoid server keep-alive timeout races
+            idle_time = now - conn.last_used
+            if idle_time > self._max_idle_time:
+                self._close_connection(conn)
+                continue
             if conn.is_alive() and not conn.is_stale():
                 conn.in_use = True
+                conn.idle_time_on_acquire = idle_time
                 conn.protocol.reset()
                 return conn
             # Dead or stale connection, close and remove from tracking
@@ -496,6 +543,7 @@ class ConnectionPool:
                 protocol_factory,
                 host=self._host,
                 port=self._port,
+                ssl=self._ssl_context,
             )
 
             # Apply/Override socket defaults
@@ -556,13 +604,14 @@ class ConnectionPool:
         connections: list[PooledConnection] = []
 
         async def create_one() -> None:
-            try:
-                conn = await self.acquire()
-                connections.append(conn)
-            except Exception as e:
-                logger.warning(f"Warmup connection failed: {e}")
+            conn = await self.acquire()
+            connections.append(conn)
 
-        await asyncio.gather(*[create_one() for _ in range(count)])
+        # ignore individual warmup exceptions
+        _ = await asyncio.gather(
+            *[create_one() for _ in range(count)],
+            return_exceptions=True,
+        )
 
         for conn in connections:
             self.release(conn)
@@ -611,7 +660,7 @@ class HttpRequestTemplate:
         static_prefix: Pre-merged request line + host header bytes
     """
 
-    __slots__ = ("static_prefix", "_extra_headers_cache")
+    __slots__ = ("static_prefix", "_extra_headers_cache", "extra_cached_headers")
 
     # Pre-encoded general headers
     HEADERS_STREAMING = (
@@ -624,6 +673,7 @@ class HttpRequestTemplate:
     def __init__(self, static_prefix: bytes):
         self.static_prefix = static_prefix
         self._extra_headers_cache: dict[frozenset, bytes] = {}
+        self.extra_cached_headers = b""
 
     @classmethod
     def from_url(cls, host: str, port: int, path: str = "/") -> HttpRequestTemplate:
@@ -666,6 +716,7 @@ class HttpRequestTemplate:
             self._extra_headers_cache[cache_key] = "".join(
                 f"{k}: {v}\r\n" for k, v in headers.items()
             ).encode("utf-8", "surrogateescape")
+            self.extra_cached_headers = b"".join(self._extra_headers_cache.values())
 
     def build_request(
         self,
@@ -692,7 +743,13 @@ class HttpRequestTemplate:
         # Fast path: no extra headers
         if not extra_headers:
             return b"".join(
-                [self.static_prefix, content_type_headers, content_length, body]
+                [
+                    self.static_prefix,
+                    self.extra_cached_headers,
+                    content_type_headers,
+                    content_length,
+                    body,
+                ]
             )
 
         # Slow path: extra headers (~1us uncached, ~50ns per extra-header cached)
@@ -704,7 +761,14 @@ class HttpRequestTemplate:
             self._extra_headers_cache[cache_key] = extra
 
         return b"".join(
-            [self.static_prefix, content_type_headers, extra, content_length, body]
+            [
+                self.static_prefix,
+                self.extra_cached_headers,
+                content_type_headers,
+                extra,
+                content_length,
+                body,
+            ]
         )
 
 

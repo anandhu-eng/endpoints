@@ -21,6 +21,7 @@ import logging
 import multiprocessing
 import os
 import signal
+import ssl
 import sys
 import time
 import traceback
@@ -29,6 +30,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from inference_endpoint.core.types import Query, QueryResult
+from inference_endpoint.endpoint_client.adapter_protocol import HttpRequestAdapter
 from inference_endpoint.endpoint_client.config import HTTPClientConfig
 from inference_endpoint.endpoint_client.http import (
     ConnectionPool,
@@ -150,6 +152,11 @@ class Worker:
         self._host = parsed.hostname or "localhost"
         self._port = parsed.port or (443 if parsed.scheme == "https" else 80)
         self._path = parsed.path or "/"
+        self._scheme = parsed.scheme
+        self._ssl_context = None
+
+        if self._scheme == "https":
+            self._ssl_context = ssl.create_default_context()
 
         # HTTP components
         self._pool: ConnectionPool | None = None
@@ -164,7 +171,8 @@ class Worker:
         self._active_tasks: set[asyncio.Task] = set()
 
         # Use adapter type from config
-        self._adapter = self.http_config.adapter
+        assert self.http_config.adapter is not None
+        self._adapter: type[HttpRequestAdapter] = self.http_config.adapter
 
     async def run(self) -> None:
         """Main worker loop - pull requests, execute, push responses."""
@@ -175,12 +183,18 @@ class Worker:
             # Use eager task factory for immediate coroutine execution
             # Tasks start executing synchronously until first await
             # NOTE(vir): CRITICAL for minimizing TFB/TTFT
-            self._loop.set_task_factory(asyncio.eager_task_factory)
+            assert self._loop is not None
+            self._loop.set_task_factory(asyncio.eager_task_factory)  # type: ignore[arg-type]
 
             # Initialize HTTP template from URL components
             self._http_template = HttpRequestTemplate.from_url(
                 self._host, self._port, self._path
             )
+            if self.http_config.api_key:
+                self._http_template.cache_headers(
+                    {"Authorization": "Bearer " + self.http_config.api_key}
+                )
+
             logger.debug(
                 f"HTTP template initialized: path={self._path}, "
                 f"host={self._host}:{self._port}"
@@ -188,7 +202,6 @@ class Worker:
 
             # Create connection pool
             # Naively divide max connections among workers
-            # TODO(vir): smarter allocation?
             connections_per_worker = (
                 self.http_config.max_connections // self.http_config.num_workers
             )
@@ -197,6 +210,8 @@ class Worker:
                 port=self._port,
                 loop=self._loop,
                 max_connections=connections_per_worker,
+                max_idle_time=self.http_config.max_idle_time,
+                ssl_context=self._ssl_context,
             )
 
             # Signal handlers for graceful shutdown
@@ -204,18 +219,44 @@ class Worker:
             signal.signal(signal.SIGINT, self.shutdown)
 
             # Warmup connection pool if enabled
-            if self.http_config.warmup_connections:
-                warmed = await self._pool.warmup()
+            warmup_cfg = self.http_config.warmup_connections
+            if warmup_cfg != 0:
+                if warmup_cfg == -1:
+                    # Auto: 50% of pool (safe default)
+                    warmup_count = connections_per_worker // 2
+                else:
+                    # Explicit total count split across workers
+                    warmup_count = warmup_cfg // self.http_config.num_workers
+                warmup_count = max(1, warmup_count)
+                warmed = await self._pool.warmup(count=warmup_count)
                 logger.debug(f"Warmed up {warmed} connections")
 
-                # Check if we got enough connections (skip if 0 = disabled)
-                min_required = self.http_config.min_required_connections
-                if min_required > 0 and warmed < min_required:
-                    logger.warning(
-                        "Warmup established fewer connections than required. "
-                        f"REQUIRED: {min_required}, WARMED: {warmed}. "
-                        "Consider closing background TCP connections or adjusting --min_required_connections."
+                # Error if 0 connections warmed up
+                if warmed == 0:
+                    msg = "Warmup: failed to establish connection to endpoint. Consider closing background TCP connections."
+                    if self.http_config.min_required_connections == 0:
+                        # log error but continue if disabled check
+                        logger.error(msg)
+                    else:
+                        # NOTE(vir):
+                        # 0 warmup connections is always fatal in practice,
+                        # user needs to explicitly disable check to proceed
+                        logger.error(
+                            f"{msg} [ skip-check with --min_required_connections=0 ]"
+                        )
+                        sys.exit(1)
+
+                # Warn if below min_required_connections threshold (skip if 0 = disabled)
+                elif self.http_config.min_required_connections > 0:
+                    min_required_per_worker = (
+                        self.http_config.min_required_connections
+                        // self.http_config.num_workers
                     )
+                    if warmed < min_required_per_worker:
+                        logger.warning(
+                            f"Warmup: this worker has {warmed} connections, need {min_required_per_worker}. "
+                            "Consider closing background TCP connections or adjusting --min_required_connections."
+                        )
 
             # TODO(vir):
             # record_worker_events has high overhead - slows down the worker 100x
@@ -223,7 +264,9 @@ class Worker:
 
             # Run main processing loop
             if self.http_config.record_worker_events:
-                worker_db_name = f"worker_report_{self.worker_id}_{os.getpid()}"
+                pid = os.getpid()
+                worker_db_name = f"worker_report_{self.worker_id}_{pid}"
+                assert self.http_config.event_logs_dir is not None
                 report_path = self.http_config.event_logs_dir / f"{worker_db_name}.csv"
 
                 with EventRecorder(session_id=worker_db_name) as event_recorder:
@@ -286,6 +329,7 @@ class Worker:
                         continue
 
                     # Process response asynchronously
+                    assert self._loop is not None
                     task = self._loop.create_task(self._process_response(prepared))
 
                     # Keep task alive to prevent GC
@@ -307,6 +351,7 @@ class Worker:
         is_streaming = query.data.get("stream", False)
 
         # Build complete HTTP request bytes
+        assert self._http_template is not None
         http_bytes = self._http_template.build_request(
             body_bytes,
             is_streaming,
@@ -338,16 +383,8 @@ class Worker:
 
         try:
             # Acquire connection from pool
+            assert self._pool is not None
             conn = await self._pool.acquire()
-
-            # Record time just-before request is issued
-            if self.http_config.record_worker_events:
-                EventRecorder.record_event(
-                    SampleEvent.HTTP_REQUEST_ISSUED,
-                    time.monotonic_ns(),
-                    sample_uuid=req.query_id,
-                    assert_active=True,
-                )
 
             # Write request bytes directly to transport
             conn.protocol.write(req.http_bytes)
@@ -367,13 +404,15 @@ class Worker:
         """Process response for a fired request."""
         try:
             conn = req.connection
+            assert conn is not None, "Connection should be set by _fire_request"
 
             # Await headers and handle error status
             status_code, _ = await conn.protocol.read_headers()
             if status_code != 200:
                 error_body = await conn.protocol.read_body()
                 # Release connection early - done with socket I/O
-                self._pool.release(req.connection)
+                assert self._pool is not None
+                self._pool.release(conn)
                 req.connection = None
                 await self._handle_error(
                     req.query_id,
@@ -389,10 +428,12 @@ class Worker:
 
         except Exception as e:
             await self._handle_error(req.query_id, e)
+            logger.warning(f"Request {req.query_id} failed: {type(e).__name__}: {e}")
 
         finally:
             # Release connection back to pool if not already released
             if req.connection:
+                assert self._pool is not None
                 self._pool.release(req.connection)
                 req.connection = None
 
@@ -406,20 +447,25 @@ class Worker:
                 )
 
             # Clean up task reference
-            self._active_tasks.discard(asyncio.current_task())
+            current_task = asyncio.current_task()
+            if current_task is not None:
+                self._active_tasks.discard(current_task)
 
     @profile
     async def _handle_streaming_body(self, req: InFlightRequest) -> None:
         """Handle streaming (SSE) response body."""
         conn = req.connection
+        assert conn is not None
         query_id = req.query_id
 
         # Create accumulator for streaming response
+        assert self.http_config.accumulator is not None
         accumulator = self.http_config.accumulator(
             query_id, self.http_config.stream_all_chunks
         )
 
         # Process SSE stream - yields batches of chunks
+        assert self._responses is not None
         async for chunk_batch in self._iter_sse_lines(conn):
             for delta in chunk_batch:
                 if stream_chunk := accumulator.add_chunk(delta):
@@ -434,6 +480,7 @@ class Worker:
                         )
 
         # Release connection early - done with socket I/O
+        assert self._pool is not None
         self._pool.release(conn)
         req.connection = None
 
@@ -451,12 +498,14 @@ class Worker:
     async def _handle_non_streaming_body(self, req: InFlightRequest) -> None:
         """Handle non-streaming response body."""
         conn = req.connection
+        assert conn is not None
         query_id = req.query_id
 
         # Read entire response body
         response_bytes = await conn.protocol.read_body()
 
         # Release connection early - done with socket I/O
+        assert self._pool is not None
         self._pool.release(conn)
         req.connection = None
 
@@ -464,6 +513,7 @@ class Worker:
         result = self._adapter.decode_response(response_bytes, query_id)
 
         # Send result back to main rank
+        assert self._responses is not None
         self._responses.send(result)
         if self.http_config.record_worker_events:
             EventRecorder.record_event(

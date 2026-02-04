@@ -398,7 +398,19 @@ def _create_receiver(
     message_type: type | None = None,
     bind: bool = False,
 ) -> _ZmqReceiverTransport:
-    """Create a ZMQ receiver transport."""
+    """Create a ZMQ receiver transport.
+
+    Args:
+        loop: Event loop for transport registration.
+        address: ZMQ address (e.g., "ipc:///tmp/socket").
+        context: ZMQ context.
+        config: Socket configuration.
+        message_type: Type hint for msgspec decoder. Can be a single type, Union type, or None.
+        bind: Whether to bind (True) or connect (False).
+
+    Returns:
+        Configured receiver transport.
+    """
     sock = context.socket(zmq.PULL)
     sock.setsockopt(zmq.LINGER, config.linger)
     sock.setsockopt(zmq.RCVHWM, config.high_water_mark)
@@ -410,7 +422,7 @@ def _create_receiver(
         sock.connect(address)
 
     decoder = (
-        msgspec.msgpack.Decoder(type=message_type)
+        msgspec.msgpack.Decoder(type=message_type)  # type: ignore[arg-type]
         if message_type
         else msgspec.msgpack.Decoder()
     )
@@ -519,7 +531,9 @@ class _ZmqWorkerConnector(WorkerConnector):
         finally:
             requests.close()
             responses.close()
-            context.term()
+            # linger=0 to force immediate shutdown
+            # without waiting for pending messages
+            context.destroy(linger=0)
 
 
 # =============================================================================
@@ -602,7 +616,7 @@ class ZmqWorkerPoolTransport(WorkerPoolTransport):
             self._response_addr,
             self._context,
             config,
-            QueryResult | StreamChunk,
+            QueryResult | StreamChunk,  # type: ignore[arg-type]
             bind=True,
         )
         self._readiness_receiver = _create_receiver(
@@ -694,14 +708,9 @@ class ZmqWorkerPoolTransport(WorkerPoolTransport):
             sender.close()
         self._response_receiver.close()
         self._readiness_receiver.close()
-
-        # Terminate ZMQ context
-        try:
-            self._context.setsockopt(zmq.LINGER, 0)
-            self._context.term()
-        except zmq.ZMQError:
-            # Already terminated or error during shutdown
-            pass
+        # linger=0 to force immediate shutdown
+        # without waiting for pending messages
+        self._context.destroy(linger=0)
 
         # Cleanup temp directory
         try:
