@@ -58,6 +58,9 @@ performance = [
     "pytest-benchmark>=4.0.0",
     "memory-profiler>=0.60.0",
 ]
+postgres = [
+    "psycopg[binary]>=3.1.0",
+]
 
 [project.scripts]
 inference-endpoint = "inference_endpoint.main:run"
