@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import ClassVar
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .. import metrics
 from .ruleset_base import BenchmarkSuiteRuleset
@@ -266,13 +266,36 @@ class LoadPattern(BaseModel):
     - max_throughput: target_qps used for calculating total queries (offline, optional with default)
     - poisson: target_qps sets scheduler rate (online, required - validated)
     - concurrency: issue at fixed target_concurrency (online, required - validated)
+
+    target_concurrency can be either:
+    - Single int: Run one benchmark with that concurrency level
+    - List of ints: Run multiple benchmarks sequentially, one per concurrency level
     """
 
     type: LoadPatternType = LoadPatternType.MAX_THROUGHPUT
     target_qps: float | None = (
         None  # Target QPS - required for poisson pattern, optional otherwise
     )
-    target_concurrency: int | None = None  # For concurrency mode, ignored otherwise
+    target_concurrency: int | list[int] | None = (
+        None  # For concurrency mode, ignored otherwise
+    )
+
+    @field_validator("target_concurrency", mode="before")
+    @classmethod
+    def validate_target_concurrency(cls, v):
+        """Validate target_concurrency accepts int or list of ints."""
+        if v is None:
+            return v
+        # Accept single int
+        if isinstance(v, int):
+            return v
+        # Accept list of ints
+        if isinstance(v, list):
+            return v
+        # Try to convert if it's something else (shouldn't happen with proper YAML)
+        raise ValueError(
+            f"target_concurrency must be an integer or list of integers, got {type(v)}"
+        )
 
 
 class ClientSettings(BaseModel):
@@ -524,10 +547,25 @@ class BenchmarkConfig(BaseModel):
                     )
             elif load_pattern_type == LoadPatternType.CONCURRENCY:
                 # Concurrency pattern requires target_concurrency > 0
-                if not target_concurrency or target_concurrency <= 0:
+                # Can be single int or list of ints
+                if target_concurrency is None:
                     raise ValueError(
-                        "Concurrency load pattern requires target_concurrency > 0. "
-                        "Specify number of concurrent requests (e.g., target_concurrency: 10 under load_pattern in YAML or --concurrency 10 in CLI)"
+                        "Concurrency load pattern requires target_concurrency to be specified. "
+                        "Specify number of concurrent requests (e.g., target_concurrency: 10 or target_concurrency: [10, 20, 30] in YAML or --concurrency 10 in CLI)"
+                    )
+
+                # Validate single int or list of ints
+                if isinstance(target_concurrency, list):
+                    if len(target_concurrency) == 0:
+                        raise ValueError("target_concurrency list cannot be empty")
+                    for i, conc in enumerate(target_concurrency):
+                        if not isinstance(conc, int) or conc <= 0:
+                            raise ValueError(
+                                f"target_concurrency[{i}] must be a positive integer, got {conc}"
+                            )
+                elif not isinstance(target_concurrency, int) or target_concurrency <= 0:
+                    raise ValueError(
+                        f"target_concurrency must be a positive integer or list of positive integers, got {target_concurrency}"
                     )
 
     def validate_client_settings(self) -> None:

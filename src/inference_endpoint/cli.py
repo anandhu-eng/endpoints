@@ -267,8 +267,10 @@ def _add_online_specific_args(parser):
     )
     parser.add_argument(
         "--concurrency",
-        type=int,
-        help="Max concurrent requests (required when --load-pattern=concurrency)",
+        type=str,
+        help="Max concurrent requests (required when --load-pattern=concurrency). "
+        "Can be a single value (e.g., '10') or comma-separated list (e.g., '10,20,30') "
+        "to run multiple benchmarks sequentially.",
     )
 
 

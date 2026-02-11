@@ -273,6 +273,26 @@ def _build_config_from_cli(
     Raises:
         InputValidationError: If required params missing
     """
+    # Parse concurrency argument (can be single value or comma-separated list)
+    concurrency_value: int | list[int] | None = None
+    if concurrency_str := getattr(args, "concurrency", None):
+        if "," in concurrency_str:
+            # Parse comma-separated list
+            try:
+                concurrency_value = [int(c.strip()) for c in concurrency_str.split(",")]
+            except ValueError as e:
+                raise InputValidationError(
+                    f"Invalid concurrency value '{concurrency_str}': all values must be integers"
+                ) from e
+        else:
+            # Parse single integer
+            try:
+                concurrency_value = int(concurrency_str)
+            except ValueError as e:
+                raise InputValidationError(
+                    f"Invalid concurrency value '{concurrency_str}': must be an integer"
+                ) from e
+
     # Determine load pattern (CLI override or mode default)
     if load_pattern_arg := getattr(args, "load_pattern", None):
         load_pattern_type = LoadPatternType(load_pattern_arg)
@@ -280,7 +300,7 @@ def _build_config_from_cli(
         match benchmark_mode:
             case "offline":
                 load_pattern_type = LoadPatternType.MAX_THROUGHPUT
-            case "online" if getattr(args, "concurrency", None):
+            case "online" if concurrency_value is not None:
                 load_pattern_type = LoadPatternType.CONCURRENCY
             case "online":
                 load_pattern_type = LoadPatternType.POISSON
@@ -309,7 +329,7 @@ def _build_config_from_cli(
             load_pattern=LoadPattern(
                 type=load_pattern_type,
                 target_qps=getattr(args, "target_qps", None),
-                target_concurrency=getattr(args, "concurrency", None),
+                target_concurrency=concurrency_value,
             ),
             runtime=RuntimeConfig(
                 min_duration_ms=args.duration * 1000
@@ -359,9 +379,90 @@ def _run_benchmark(
     test_mode: TestMode,
     benchmark_mode: TestType | None,
 ) -> None:
-    """Execute the actual benchmark with full lifecycle management.
+    """Execute benchmark(s) - either single run or multiple runs for different concurrency values.
 
-    This function orchestrates the complete benchmark execution:
+    This function handles the top-level orchestration:
+    1. If target_concurrency is a single value or not applicable, run one benchmark
+    2. If target_concurrency is a list, run multiple benchmarks sequentially
+    3. Each benchmark run gets its own subdirectory (concurrency_{value})
+    4. Resources are fully cleaned up between runs to ensure isolation
+
+    Args:
+        config: Validated BenchmarkConfig (immutable Pydantic model).
+        collect_responses: Whether to store full response text.
+        test_mode: What to collect - PERF, ACC, or BOTH.
+        benchmark_mode: Execution mode - OFFLINE or ONLINE.
+    """
+    # Determine base report directory
+    if config.report_dir:
+        base_report_dir = Path(config.report_dir)
+    else:
+        base_report_dir = get_default_report_path()
+
+    # Check if we need to run multiple benchmarks for different concurrency values
+    load_pattern = config.settings.load_pattern
+    target_concurrency = load_pattern.target_concurrency
+
+    # If concurrency mode with list of values, run multiple benchmarks
+    if load_pattern.type == LoadPatternType.CONCURRENCY and isinstance(
+        target_concurrency, list
+    ):
+        logger.info(
+            f"Running {len(target_concurrency)} benchmarks with concurrency values: {target_concurrency}"
+        )
+
+        for i, concurrency_val in enumerate(target_concurrency):
+            logger.info(
+                f"\n{'='*80}\nBenchmark {i+1}/{len(target_concurrency)}: Concurrency = {concurrency_val}\n{'='*80}"
+            )
+
+            # Create subdirectory for this concurrency value
+            concurrency_report_dir = base_report_dir / f"concurrency_{concurrency_val}"
+
+            try:
+                _run_single_benchmark(
+                    config=config,
+                    collect_responses=collect_responses,
+                    test_mode=test_mode,
+                    benchmark_mode=benchmark_mode,
+                    report_dir=concurrency_report_dir,
+                    concurrency_value=concurrency_val,
+                )
+            except Exception as e:
+                logger.error(f"Benchmark failed for concurrency={concurrency_val}: {e}")
+                raise
+
+            logger.info(
+                f"Completed benchmark {i+1}/{len(target_concurrency)} (concurrency={concurrency_val})"
+            )
+
+        logger.info(
+            f"\n{'='*80}\nAll benchmarks completed successfully!\nResults saved to: {base_report_dir}\n{'='*80}"
+        )
+
+    else:
+        # Single benchmark run
+        _run_single_benchmark(
+            config=config,
+            collect_responses=collect_responses,
+            test_mode=test_mode,
+            benchmark_mode=benchmark_mode,
+            report_dir=base_report_dir,
+            concurrency_value=None,
+        )
+
+
+def _run_single_benchmark(
+    config: BenchmarkConfig,
+    collect_responses: bool,
+    test_mode: TestMode,
+    benchmark_mode: TestType | None,
+    report_dir: Path,
+    concurrency_value: int | None = None,
+) -> None:
+    """Execute a single benchmark run with full lifecycle management.
+
+    This function orchestrates a complete benchmark execution:
     1. Load tokenizer for the target model
     2. Load and validate dataset using DataLoaderFactory
     3. Setup runtime settings and scheduler
@@ -369,6 +470,11 @@ def _run_benchmark(
     5. Run benchmark session with signal handling
     6. Collect and report results
     7. Clean up resources (always, even on error)
+
+    When called as part of multiple concurrency runs:
+    - Creates fresh worker processes for isolation
+    - Clears event hooks to prevent cross-contamination
+    - Uses dedicated subdirectory for this run's results
 
     Architecture notes:
     - This is a SYNCHRONOUS function (not async) because HTTPEndpointClient
@@ -382,7 +488,6 @@ def _run_benchmark(
     - Disabled for offline mode (max throughput focus)
 
     Args:
-        args: Command arguments containing output paths, verbosity, etc.
         config: Validated BenchmarkConfig (immutable Pydantic model).
                Contains all benchmark parameters from CLI or YAML.
         collect_responses: Whether to store full response text.
@@ -391,6 +496,9 @@ def _run_benchmark(
                   or BOTH (metrics + responses).
         benchmark_mode: Execution mode - OFFLINE (max throughput) or
                        ONLINE (sustained QPS). Affects streaming and scheduling.
+        report_dir: Directory to write reports and results for this run.
+        concurrency_value: If set, overrides config's target_concurrency for this run.
+                          Used when iterating through multiple concurrency values.
 
     Raises:
         InputValidationError: If model/dataset cannot be loaded or validated.
@@ -411,12 +519,29 @@ def _run_benchmark(
         model_name = config.submission_ref.model
         config.model_params.name = model_name
 
-    if config.report_dir:
-        report_dir = Path(config.report_dir)
-    else:
-        report_dir = get_default_report_path()
-
+    # Ensure report directory exists
     report_dir.mkdir(parents=True, exist_ok=True)
+
+    # If concurrency_value is provided, create a modified config with single concurrency
+    if concurrency_value is not None:
+        # Create a new config with the specific concurrency value
+        config = BenchmarkConfig(
+            **{
+                **config.model_dump(),
+                "settings": Settings(
+                    **{
+                        **config.settings.model_dump(),
+                        "load_pattern": LoadPattern(
+                            **{
+                                **config.settings.load_pattern.model_dump(),
+                                "target_concurrency": concurrency_value,
+                            }
+                        ),
+                    }
+                ),
+            }
+        )
+
     config.to_yaml_file(report_dir / "config.yaml")
 
     if model_name:
@@ -736,6 +861,11 @@ def _run_benchmark(
                 sample_issuer.shutdown()
                 http_client.shutdown()
                 shutil.rmtree(tmp_dir, ignore_errors=True)
+
+                # Clear event hooks to ensure clean state for next benchmark run
+                # This is critical when running multiple concurrency benchmarks
+                SampleEventHandler.clear_hooks()
+
             except Exception as e:
                 if config.verbose:
                     logger.warning(f"Cleanup error: {e}")

@@ -379,7 +379,11 @@ class ConcurrencyScheduler(Scheduler, load_pattern=LoadPatternType.CONCURRENCY):
         super().__init__(runtime_settings, sample_order_cls)
         assert runtime_settings.load_pattern is not None
         target_concurrency = runtime_settings.load_pattern.target_concurrency
-        if target_concurrency is None or target_concurrency <= 0:
+        if (
+            target_concurrency is None
+            or (isinstance(target_concurrency, int) and target_concurrency <= 0)
+            or (isinstance(target_concurrency, list) and len(target_concurrency) == 0)
+        ):
             raise ValueError(
                 f"target_concurrency must be > 0 for CONCURRENCY load pattern, got {target_concurrency}"
             )
