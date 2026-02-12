@@ -26,6 +26,8 @@ up and validating their benchmark configurations.
 """
 
 import json
+import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -39,6 +41,7 @@ from inference_endpoint.commands.utils import (
     run_validate_command,
 )
 from inference_endpoint.exceptions import InputValidationError
+from inference_endpoint.utils import monotime_to_datetime
 
 
 class TestRunInfoCommand:
@@ -831,3 +834,30 @@ class TestGenerateMlperfLogDetailsSubmissionChecker:
         assert "qps" not in keys_in_output
         assert "latency.min" not in keys_in_output
         assert "latency.max" not in keys_in_output
+        
+class TestMonotimeToDatetime:
+    """Test monotime_to_datetime conversion for past and current monotonic times."""
+
+    def test_monotime_to_datetime_backward_past_time(self):
+        """Past monotonic time converts to a datetime in the past relative to now."""
+        # Monotonic time 2 seconds ago
+        mono_now_ns = time.monotonic_ns()
+        past_mono_ns = mono_now_ns - 2 * 10**9  # 2 seconds in nanoseconds
+
+        result = monotime_to_datetime(past_mono_ns)
+        now = datetime.now()
+        delta = now - result
+
+        # Result should be roughly 2 seconds before now (allow 0.5s tolerance)
+        assert timedelta(seconds=1.5) <= delta <= timedelta(seconds=2.5)
+
+    def test_monotime_to_datetime_forward_current_time(self):
+        """Current monotonic time converts to a datetime close to now."""
+        mono_now_ns = time.monotonic_ns()
+
+        result = monotime_to_datetime(mono_now_ns)
+        now = datetime.now()
+        delta = abs((now - result).total_seconds())
+
+        # Result should be within 5 second of now (conversion and execution delay)
+        assert delta <= 5.0
