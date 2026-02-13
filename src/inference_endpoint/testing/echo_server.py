@@ -111,6 +111,8 @@ class EchoServer(HTTPServer):
 
         # Get request body
         try:
+            print("handle echo req")
+
             if request.content_type == "application/json":
                 json_payload = await request.json()
                 raw_payload = json.dumps(json_payload)
@@ -174,6 +176,8 @@ class EchoServer(HTTPServer):
             Any underlying exceptions that occur during streaming, which will be logged.
         """
         try:
+            print("stream req rec'd")
+
             response = web.StreamResponse(
                 status=200,
                 headers={
@@ -243,6 +247,8 @@ class EchoServer(HTTPServer):
 
         # Get request body
         try:
+            print("chat compl req")
+
             if request.content_type == "application/json":
                 json_payload = await request.json()
             else:
@@ -426,7 +432,8 @@ def main():
     #
     from inference_endpoint.utils.logging import setup_logging
 
-    setup_logging()
+    # setup_logging()
+    setup_logging("DEBUG")
     parser = create_parser()
     args = parser.parse_args()
 

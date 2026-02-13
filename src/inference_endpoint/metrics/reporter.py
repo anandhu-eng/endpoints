@@ -591,18 +591,25 @@ class MetricsReporter:
 
     def __init__(
         self,
-        connection_name: os.PathLike,
+        connection_name: os.PathLike | str,
         client_type: str = "duckdb",
+        table_name: str = "events",
     ):
         """
         Creates a new MetricsReporter.
 
         Args:
-            connection_name: The path to the database to connect to.
-            client_type: The client type to use to connect to the database. Choices: ["duckdb", "sqlite"] (Default: "duckdb")
+            connection_name: The path to the database file, or a connection string for postgres.
+            client_type: The client type to use to connect to the database. Choices: ["duckdb", "sqlite", "postgres"] (Default: "duckdb")
+            table_name: The table name to query. Defaults to "events". Use session-specific names for postgres.
         """
-        self.connection_name = Path(connection_name)
+        self.connection_name = (
+            connection_name
+            if isinstance(connection_name, str)
+            else Path(connection_name)
+        )
         self.client_type = client_type
+        self.table_name = table_name
         self.is_closed = True
 
     def init_connection(self):
@@ -648,6 +655,26 @@ class MetricsReporter:
                 f"file:{self.connection_name}?mode=ro", uri=True
             )
             self.cur_ = self.conn.cursor()
+        elif self.client_type == "postgres":
+            logging.debug("Initializing postgres connection for metrics reporting")
+            if importlib.util.find_spec("psycopg") is None:
+                raise ImportError(
+                    "psycopg is not installed. Install with: pip install 'psycopg[binary]'"
+                )
+            psycopg = importlib.import_module("psycopg")
+
+            try:
+                print(str(self.connection_name))
+                self.conn = psycopg.connect(  # call stack is here
+                    str(self.connection_name),
+                    autocommit=True,  # False ? as we are only reading the DB
+                )
+            except Exception as e:
+                print(f"pyscopg3 conn error {e}")
+            finally:
+                pass
+
+            self.cur_ = self.conn.cursor()
         else:
             raise ValueError(f"Invalid client type: {self.client_type}")
         self.is_closed = False
@@ -665,7 +692,7 @@ class MetricsReporter:
         """
         result = self.cur_.execute(f"""
         SELECT timestamp_ns
-        FROM events
+        FROM {self.table_name}
         WHERE event_type = '{SessionEvent.STOP_PERFORMANCE_TRACKING.value}'
         LIMIT 1
         """).fetchone()
@@ -703,7 +730,7 @@ class MetricsReporter:
                 sample_uuid,
                 MAX(CASE WHEN event_type = '{SampleEvent.FIRST_CHUNK.value}' THEN timestamp_ns END) -
                 MAX(CASE WHEN event_type = '{SessionEvent.LOADGEN_ISSUE_CALLED.value}' THEN timestamp_ns END) AS ttft
-            FROM events
+            FROM {self.table_name}
             WHERE event_type IN ('{SessionEvent.LOADGEN_ISSUE_CALLED.value}', '{SampleEvent.FIRST_CHUNK.value}')
             GROUP BY sample_uuid
             {before_stop_ts_clause}
@@ -715,12 +742,12 @@ class MetricsReporter:
         logging.debug(f"Dumping to CSV at {csv_path}")
         with csv_path.open("w", newline="") as f:
             writer = csv.writer(f)
-            query = """
+            query = f"""
             SELECT
                 sample_uuid,
                 timestamp_ns,
                 event_type
-            FROM events
+            FROM {self.table_name}
             """
             rows = self.cur_.execute(query).fetchall()
             writer.writerows(rows)
@@ -762,7 +789,7 @@ class MetricsReporter:
         # Validate TEST_STARTED exists exactly once
         test_started_result = self.cur_.execute(f"""
         SELECT COUNT(*) AS n_starts, MAX(timestamp_ns) AS start_ts
-        FROM events
+        FROM {self.table_name}
         WHERE event_type = '{SessionEvent.TEST_STARTED.value}'
         """).fetchone()
 
@@ -788,10 +815,10 @@ class MetricsReporter:
             # Then find the max timestamp_ns of any event from those sample_uuids
             max_perf_ts_result = self.cur_.execute(f"""
             SELECT MAX(timestamp_ns) AS max_perf_ts
-            FROM events
+            FROM {self.table_name}
             WHERE sample_uuid IN (
                 SELECT DISTINCT sample_uuid
-                FROM events
+                FROM {self.table_name}
                 WHERE event_type = '{SessionEvent.LOADGEN_ISSUE_CALLED.value}'
                 AND timestamp_ns < {stop_ts}
             )
@@ -807,9 +834,9 @@ class MetricsReporter:
         else:
             # No STOP_PERFORMANCE_TRACKING, use max timestamp_ns in database
             # Get max timestamp in database
-            max_ts_result = self.cur_.execute("""
+            max_ts_result = self.cur_.execute(f"""
             SELECT MAX(timestamp_ns) AS max_ts
-            FROM events
+            FROM {self.table_name}
             """).fetchone()
             max_ts = max_ts_result[0]
 
@@ -817,7 +844,7 @@ class MetricsReporter:
                 # Validate TEST_ENDED constraints
                 test_ended_result = self.cur_.execute(f"""
                 SELECT COUNT(*) AS n_ends, MAX(timestamp_ns) AS end_ts
-                FROM events
+                FROM {self.table_name}
                 WHERE event_type = '{SessionEvent.TEST_ENDED.value}'
                 """).fetchone()
 
@@ -865,7 +892,7 @@ class MetricsReporter:
                 sample_uuid,
                 MAX(CASE WHEN event_type = '{SampleEvent.COMPLETE.value}' THEN timestamp_ns END) -
                 MAX(CASE WHEN event_type = '{SessionEvent.LOADGEN_ISSUE_CALLED.value}' THEN timestamp_ns END) AS latency
-            FROM events
+            FROM {self.table_name}
             WHERE event_type IN ('{SessionEvent.LOADGEN_ISSUE_CALLED.value}', '{SampleEvent.COMPLETE.value}')
             GROUP BY sample_uuid
             {before_stop_ts_clause}
@@ -887,7 +914,7 @@ class MetricsReporter:
         if stop_ts != float("inf"):
             where_clause = f"""
             WHERE sample_uuid IN (
-                SELECT sample_uuid FROM events
+                SELECT sample_uuid FROM {self.table_name}
                 WHERE event_type = '{SessionEvent.LOADGEN_ISSUE_CALLED.value}'
                 AND timestamp_ns < {stop_ts}
             )
@@ -897,7 +924,7 @@ class MetricsReporter:
         SELECT
             COUNT(DISTINCT CASE WHEN event_type = '{SessionEvent.LOADGEN_ISSUE_CALLED.value}' THEN sample_uuid END) AS request_sent_count,
             COUNT(DISTINCT CASE WHEN event_type = '{SampleEvent.COMPLETE.value}' THEN sample_uuid END) AS complete_count
-        FROM events
+        FROM {self.table_name}
         {where_clause}
         """).fetchone()
 
@@ -911,7 +938,7 @@ class MetricsReporter:
         return self.cur_.execute(f"""
         SELECT
             COUNT(*) AS error_count
-        FROM events
+        FROM {self.table_name}
         WHERE event_type = '{SessionEvent.ERROR.value}'
         """).fetchone()[0]
 
@@ -933,7 +960,7 @@ class MetricsReporter:
         if performance_only and stop_ts != float("inf"):
             before_stop_ts_clause = f"""
             AND sample_uuid IN (
-                SELECT sample_uuid FROM events
+                SELECT sample_uuid FROM {self.table_name}
                 WHERE event_type = '{SessionEvent.LOADGEN_ISSUE_CALLED.value}'
                 AND timestamp_ns < {stop_ts}
             )
@@ -944,7 +971,7 @@ class MetricsReporter:
         # Query for COMPLETE events with their data column
         query_result = self.cur_.execute(f"""
             SELECT sample_uuid, data
-            FROM events
+            FROM {self.table_name}
             WHERE event_type = '{SampleEvent.COMPLETE.value}'
             {before_stop_ts_clause}
         """).fetchall()
@@ -1135,7 +1162,7 @@ class MetricsReporter:
 
         with json_path.open("w", encoding="utf-8", newline="") as f:
             query_result = self.cur_.execute(
-                "SELECT sample_uuid, event_type, timestamp_ns, data FROM events"
+                f"SELECT sample_uuid, event_type, timestamp_ns, data FROM {self.table_name}"
             )
             while True:
                 if hasattr(query_result, "fetchmany"):
@@ -1191,7 +1218,7 @@ class MetricsReporter:
 
     def __enter__(self):
         if self.is_closed:
-            self.init_connection()
+            self.init_connection()  # call stack is here
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):

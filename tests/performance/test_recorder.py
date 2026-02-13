@@ -164,6 +164,7 @@ def test_many_chunk_performance(
                 sample_uuid=str(sample_uuid + 1),
                 data="test",
             )
+        print("calling test_many_chunk_performance() wait_for_writes")
         rec.wait_for_writes(force_commit=True)
         end_time = time.monotonic_ns()
 
