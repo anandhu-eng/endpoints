@@ -228,6 +228,18 @@ def _add_shared_benchmark_args(parser):
     parser.add_argument(
         "--report-dir", type=Path, help="Path to save detailed benchmark report"
     )
+    parser.add_argument(
+        "--db-backend",
+        type=str,
+        choices=["sqlite", "postgres"],
+        default="sqlite",
+        help="Database backend for event storage: sqlite (default) or postgres",
+    )
+    parser.add_argument(
+        "--db-connection-string",
+        type=str,
+        help="Database connection string (required for postgres, or set DATABASE_URL env var)",
+    )
 
 
 def _add_online_specific_args(parser):
@@ -345,7 +357,7 @@ async def main() -> None:
         sys.exit(1)
     except SetupError as e:
         # Setup/initialization errors - log with optional stack trace
-        logger.error(f"Setup failed: {e}")
+        logger.error(f"xSetup failed: {e}")
         if args.verbose >= 2:
             traceback.print_exc()
         sys.exit(1)
