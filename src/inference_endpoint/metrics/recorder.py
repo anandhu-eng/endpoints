@@ -92,6 +92,9 @@ def psycopg3_cursor(conninfo: str):
     print(f"connecting to supabase NEW {conninfo1}")
     # conn = psycopg.connect(conninfo, autocommit=False)
     conn = psycopg.connect(conninfo1, autocommit=False)
+    conn = psycopg.connect(
+        conninfo, prepare_threshold=None, autocommit=False, connect_timeout=5
+    )
     cursor = conn.cursor()
     print(f" psycopg3_cursor: {cursor}")
     try:
