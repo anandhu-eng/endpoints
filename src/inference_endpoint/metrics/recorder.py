@@ -150,7 +150,11 @@ class EventRow:
     is not meaningful, but the differences between timestamps are accurate."""
 
     data: bytes = dataclasses.field(
-        default=b"", metadata={"sql_type": "BLOB", "pg_sql_type": "BYTEA"}
+        default=b"",
+        metadata={
+            "sql_type": "BLOB",
+            "pg_sql_type": "JSONB",
+        },  # was: "pg_sql_type": "BYTEA"
     )
     """The data, if any, associated with the event, encoded as JSON bytes."""
 
@@ -386,7 +390,16 @@ class EventRecorder:
                 """Helper to commit and clear the event buffer."""
                 print("start of commit_buffer() ")
                 if event_buffer:
-                    cur.executemany(insert_query, event_buffer)
+                    if self.backend == "postgres":
+                        # Adapt bytes → JSON string (or None) for JSONB column
+                        # was: cur.executemany(insert_query, event_buffer)
+                        adapted = [
+                            (r[0], r[1], r[2], r[3].decode("utf-8") if r[3] else None)
+                            for r in event_buffer
+                        ]
+                        cur.executemany(insert_query, adapted)
+                    else:
+                        cur.executemany(insert_query, event_buffer)
                     conn.commit()
                     event_buffer.clear()
 
