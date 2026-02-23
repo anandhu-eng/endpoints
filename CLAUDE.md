@@ -44,13 +44,6 @@
 
 ### 7. Commands
 
-- start echoserver means run: python -m inference_endpoint.testing.echo_server --port 8765 &
-- start localtest means run: inference-endpoint --verbose benchmark offline --endpoint http://localhost:8765 --model Qwen/Qwen3-8B --dataset tests/datasets/dummy_1k.pkl --db-backend postgres --db-connection-string "postgresql://postgres.lczeskqdhwkfdgbgttqr:wGodMlFrBJz1HGm7@aws-1-us-east-2.pooler.supabase.com:6543/postgres"
-
-### 8. Testing
-
-- start localtest means start echoserver and start localtest
-
 ## Task Management
 
 1. \*\*Plan First: Write plan to tasks/todo.md with checkable items
