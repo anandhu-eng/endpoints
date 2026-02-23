@@ -153,8 +153,9 @@ class EventRow:
         default=b"",
         metadata={
             "sql_type": "BLOB",
-            "pg_sql_type": "JSONB",
-        },  # was: "pg_sql_type": "BYTEA"
+            # "pg_sql_type": "JSONB",
+            "pg_sql_type": "BYTEA",
+        },
     )
     """The data, if any, associated with the event, encoded as JSON bytes."""
 
@@ -388,18 +389,19 @@ class EventRecorder:
 
             def commit_buffer():
                 """Helper to commit and clear the event buffer."""
-                print("start of commit_buffer() ")
+                # print("start of commit_buffer() ")
                 if event_buffer:
-                    if self.backend == "postgres":
-                        # Adapt bytes → JSON string (or None) for JSONB column
-                        # was: cur.executemany(insert_query, event_buffer)
-                        adapted = [
-                            (r[0], r[1], r[2], r[3].decode("utf-8") if r[3] else None)
-                            for r in event_buffer
-                        ]
-                        cur.executemany(insert_query, adapted)
-                    else:
-                        cur.executemany(insert_query, event_buffer)
+                    # if self.backend == "postgres":                             # in process change 'data' type is JSONB
+                    # Adapt bytes → JSON string (or None) for JSONB column
+                    # was: cur.executemany(insert_query, event_buffer)
+                    #    adapted = [
+                    #        (r[0], r[1], r[2], r[3].decode("utf-8") if r[3] else None)
+                    #        for r in event_buffer
+                    #    ]
+                    #    cur.executemany(insert_query, adapted)
+                    # else:
+                    cur.executemany(insert_query, event_buffer)
+
                     conn.commit()
                     event_buffer.clear()
 
@@ -429,7 +431,7 @@ class EventRecorder:
                     should_commit = True
                 else:
                     # Regular event - add to buffer
-                    print("event_buffer.append() now being called")
+                    # print("event_buffer.append() now being called")
                     event_buffer.append(item)
                     should_commit = len(event_buffer) >= self.txn_buffer_size
 
@@ -438,7 +440,7 @@ class EventRecorder:
                     logging.debug(
                         f"Committing {len(event_buffer)} transactions (max buffer size: {self.txn_buffer_size})"
                     )
-                    print("buff FULL; forcing commit !! ")
+                    # print("buff FULL; forcing commit !! ")
                     commit_buffer()
                 self.event_queue.task_done()
 
