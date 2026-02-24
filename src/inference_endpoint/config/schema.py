@@ -39,6 +39,7 @@ class SystemDefaults(BaseModel):
 class APIType(str, Enum):
     OPENAI = "openai"
     SGLANG = "sglang"
+    TRTLLM = "trtllm"
 
     def default_route(self) -> str:
         match self:
@@ -46,6 +47,8 @@ class APIType(str, Enum):
                 return "/v1/chat/completions"
             case APIType.SGLANG:
                 return "/generate"
+            case APIType.TRTLLM:
+                return "/v1/chat/completions"
             case _:
                 raise ValueError(f"Invalid API type: {self}")
 

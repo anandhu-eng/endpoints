@@ -31,11 +31,13 @@ from .utils import get_ephemeral_port_limit, get_ephemeral_port_range
 ADAPTER_MAP = {
     APIType.OPENAI: "inference_endpoint.openai.openai_msgspec_adapter.OpenAIMsgspecAdapter",
     APIType.SGLANG: "inference_endpoint.sglang.adapter.SGLangGenerateAdapter",
+    APIType.TRTLLM: "inference_endpoint.trtllm.adapter.TRTLLMAdapter",
 }
 
 ACCUMULATOR_MAP = {
     APIType.OPENAI: "inference_endpoint.openai.accumulator.OpenAISSEAccumulator",
     APIType.SGLANG: "inference_endpoint.sglang.accumulator.SGLangSSEAccumulator",
+    APIType.TRTLLM: "inference_endpoint.trtllm.accumulator.TRTLLMSSEAccumulator",
 }
 
 

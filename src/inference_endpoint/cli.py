@@ -141,9 +141,9 @@ def create_parser() -> argparse.ArgumentParser:
     probe_parser.add_argument(
         "--api-type",
         type=str,
-        choices=["openai", "sglang"],
+        choices=["openai", "sglang", "trtllm"],
         default="openai",
-        help="API type: openai (default) or sglang",
+        help="API type: openai (default), sglang, or trtllm",
     )
     probe_parser.add_argument(
         "--model", type=str, required=True, help="Model name (e.g., llama-2-70b)"
@@ -198,9 +198,9 @@ def _add_shared_benchmark_args(parser):
     parser.add_argument(
         "--api-type",
         type=str,
-        choices=["openai", "sglang"],
+        choices=["openai", "sglang", "trtllm"],
         default="openai",
-        help="API type: openai (default) or sglang",
+        help="API type: openai (default), sglang, or trtllm",
     )
     parser.add_argument("--workers", type=int, help="HTTP workers (default: auto)")
     parser.add_argument(

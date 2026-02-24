@@ -306,7 +306,7 @@ class MakeAdapterCompatible(ColumnRemap):
                 ): "prompt",
                 "system_prompt": "system",
             },
-            strict=True,
+            strict=False,
         )
 
 

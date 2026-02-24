@@ -792,14 +792,15 @@ class TestMakeAdapterCompatible:
         assert "system" in result.columns
         assert "system_prompt" not in result.columns
 
-    def test_priority_order_strict_mode(self):
-        """Test that having multiple candidates in strict mode raises error."""
+    def test_priority_order_picks_first_candidate(self):
+        """Test that with multiple candidates, strict=False picks the first match."""
         df = pd.DataFrame({"user_prompt": ["First"], "question": ["Second"]})
         transform = MakeAdapterCompatible()
 
-        # MakeAdapterCompatible uses strict=True by default
-        with pytest.raises(ValueError, match="Multiple columns found"):
-            transform(df)
+        # MakeAdapterCompatible uses strict=False — picks first candidate found
+        result = transform(df)
+        assert "prompt" in result.columns
+        assert result["prompt"].iloc[0] == "First"
 
     def test_already_has_prompt(self):
         """Test when DataFrame already has prompt column (no remapping needed)."""
