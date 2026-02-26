@@ -664,13 +664,24 @@ class MetricsReporter:
                 self.conn
             )  # duckdb calls execute() on connection, there is no cursor object
         elif self.client_type == "sqlite":
-            logging.debug(
-                f"Initializing read-only sqlite connection at {self.connection_name}"
-            )
-            self.conn = sqlite3.connect(
-                f"file:{self.connection_name}?mode=ro", uri=True
-            )
+            logging.debug(f"Initializing sqlite connection at {self.connection_name}")
+            self.conn = sqlite3.connect(str(self.connection_name))
             self.cur_ = self.conn.cursor()
+            # Ensure indexes exist — cheap if already created by writer,
+            # critical for query performance if not (e.g., interrupted run)
+            try:
+                self.cur_.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_event_type ON events(event_type)"
+                )
+                self.cur_.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_sample_uuid ON events(sample_uuid)"
+                )
+                self.cur_.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_type_uuid ON events(event_type, sample_uuid)"
+                )
+                self.conn.commit()
+            except Exception:
+                pass
         else:
             raise ValueError(f"Invalid client type: {self.client_type}")
         self.is_closed = False
@@ -981,6 +992,7 @@ class MetricsReporter:
         """Returns a RollupQueryTable representing per-sample output sequence lengths based on a Tokenizer.
 
         Reads output data from the 'data' column of COMPLETE events in the database.
+        Uses batch tokenization for speed (single call instead of per-sample).
 
         Args:
             tokenizer: A Tokenizer object from HuggingFace
@@ -990,25 +1002,46 @@ class MetricsReporter:
         """
         query_result = self.get_sample_outputs()
 
-        rows = []
+        uuids: list[str] = []
+        texts: list[str] = []
         for sample_uuid, data_bytes in query_result:
             output_sequence, reasoning_sequence = output_sequence_from_data(data_bytes)
 
             if output_sequence is None:
                 continue
 
-            # Concatenate reasoning and output if reasoning exists
             if reasoning_sequence is not None:
                 full_sequence = f"{reasoning_sequence} {output_sequence}"
             else:
                 full_sequence = output_sequence
 
-            # Tokenize and calculate length
-            output_tokens = tokenizer.tokenize(full_sequence)
-            rows.append((sample_uuid, len(output_tokens)))
+            uuids.append(sample_uuid)
+            texts.append(full_sequence)
 
-        if not rows:
+        if not texts:
             return None
+
+        # Batch tokenize — use Rust encode_batch (all cores via Rayon) when available,
+        # fall back to Python __call__, then per-sample .tokenize()
+        if hasattr(tokenizer, "_tokenizer"):
+            encodings = tokenizer._tokenizer.encode_batch(
+                texts, add_special_tokens=False
+            )
+            rows = [
+                (uid, len(enc.ids)) for uid, enc in zip(uuids, encodings, strict=False)
+            ]
+        else:
+            try:
+                batch_encoded = tokenizer(texts, add_special_tokens=False)
+                rows = [
+                    (uid, len(ids))
+                    for uid, ids in zip(uuids, batch_encoded["input_ids"], strict=False)
+                ]
+            except TypeError:
+                rows = [
+                    (uid, len(tokenizer.tokenize(text)))
+                    for uid, text in zip(uuids, texts, strict=False)
+                ]
 
         return RollupQueryTable("output_sequence_length", None, rows)
 
@@ -1065,13 +1098,12 @@ class MetricsReporter:
         else:
             repeats = None
 
+        # First pass: extract texts and metadata, filtering invalid samples
+        eligible: list[tuple[str, str]] = []  # (sample_uuid, non_first_chunk_text)
         for sample_uuid, data_bytes in query_result:
             if data_bytes is None or len(data_bytes) == 0:
                 continue
 
-            # Extract output from decoded data
-            # For TPOT calculation, we need the output to be a list of chunks (streaming mode) with at least 2
-            # elements
             output_sequence, reasoning_sequence = output_sequence_from_data(
                 data_bytes, join_chunks=False
             )
@@ -1082,32 +1114,45 @@ class MetricsReporter:
             if isinstance(reasoning_sequence, list):
                 all_chunks.extend(reasoning_sequence)
 
-            # For TPOT, we need streaming data (list of chunks with at least 2 elements)
             if len(all_chunks) < 2:
                 continue
 
-            # Skip samples that are not in the filtered rollups (i.e., issued after STOP_PERFORMANCE_TRACKING)
             if sample_uuid not in sample_latency_rollup:
                 continue
 
-            # Output can be in one of two formats depending on the issuer:
-            # 1. A list of all chunks (i.e. ['chunk1', 'chunk2', ...])
-            # 2. A 2 item list of ['chunk1', 'chunk2chunk3...']
-            # Both of these are valid as we only need to distinguish the first chunk for the purposes of TPOT calculation.
-            # The choice is up to the issuer implementation depending on performance considerations.
-
-            # Join list elements to get the non-first chunk text
             if len(all_chunks) > 2:
                 non_first_chunk = "".join(str(chunk) for chunk in all_chunks[1:])
             else:
                 non_first_chunk = str(all_chunks[1])
 
             if len(non_first_chunk) == 0:
-                # Possible malformed output data where empty string is included as a non-first chunk
                 continue
 
-            non_first_tokens = tokenizer.tokenize(non_first_chunk)
-            n_non_first_tokens = len(non_first_tokens)
+            eligible.append((sample_uuid, non_first_chunk))
+
+        if not eligible:
+            return None
+
+        # Batch tokenize all non-first chunks — Rust encode_batch when available
+        texts = [text for _, text in eligible]
+        if hasattr(tokenizer, "_tokenizer"):
+            encodings = tokenizer._tokenizer.encode_batch(
+                texts, add_special_tokens=False
+            )
+            token_counts = [len(enc.ids) for enc in encodings]
+        else:
+            try:
+                batch_encoded = tokenizer(texts, add_special_tokens=False)
+                token_counts = [len(ids) for ids in batch_encoded["input_ids"]]
+            except TypeError:
+                token_counts = [len(tokenizer.tokenize(t)) for t in texts]
+
+        # Second pass: compute TPOT using token counts
+        for (sample_uuid, _), n_non_first_tokens in zip(
+            eligible, token_counts, strict=False
+        ):
+            if n_non_first_tokens == 0:
+                continue
 
             latency = sample_latency_rollup.filter_uuid(sample_uuid, only_first=True)
             if latency is None:
@@ -1115,7 +1160,6 @@ class MetricsReporter:
 
             ttft = ttft_rollup.filter_uuid(sample_uuid, only_first=True)
             if ttft is None:
-                # Non-streaming mode for this sample - error
                 raise RuntimeError(
                     f"No TTFT found for sample {sample_uuid} in streaming mode"
                 )
@@ -1127,7 +1171,6 @@ class MetricsReporter:
                 if reporting_mode == TPOTReportingMode.TOKEN_WEIGHTED:
                     repeats.append(n_non_first_tokens)
             else:
-                # Entries are tuples, and are such immutable. We can use list multiplication for performance
                 repeat_fac = (
                     1
                     if reporting_mode == TPOTReportingMode.REQUEST_WEIGHTED

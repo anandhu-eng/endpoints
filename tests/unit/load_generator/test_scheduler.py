@@ -13,12 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import math
 import random
-import threading
 
 import pytest
-from inference_endpoint.load_generator.sample import SampleEventHandler
 from inference_endpoint.load_generator.scheduler import (
     ConcurrencyScheduler,
     MaxThroughputScheduler,
@@ -87,106 +86,62 @@ def test_max_throughput_scheduler(max_throughput_runtime_settings):
 
 
 @pytest.mark.parametrize("target_concurrency", [1, 2, 100, 1000], indirect=True)
-def test_concurrency_scheduler(concurrency_runtime_settings, target_concurrency):
-    """Test ConcurrencyScheduler properly gates issuance by completions."""
+@pytest.mark.asyncio
+async def test_concurrency_scheduler(concurrency_runtime_settings, target_concurrency):
+    """Test ConcurrencyScheduler gates issuance via asyncio.Semaphore + notify_complete()."""
     total_samples = concurrency_runtime_settings.n_samples_to_issue
 
     scheduler = ConcurrencyScheduler(
         concurrency_runtime_settings, WithReplacementSampleOrder
     )
 
-    # State tracking
-    state_lock = threading.RLock()
     issued_count = 0
     completed_count = 0
     current_inflight = 0
     max_inflight = 0
 
-    # Synchronization: signal when queries can complete and when they're done
-    can_complete = [threading.Event() for _ in range(total_samples)]
-    completed = [threading.Event() for _ in range(total_samples)]
-    # Signal when each query is issued
-    issued = [threading.Event() for _ in range(total_samples)]
+    # asyncio.Event per sample for coordinating completion
+    can_complete = [asyncio.Event() for _ in range(total_samples)]
 
-    def completion_worker():
-        """Waits for signals to complete queries."""
-        nonlocal completed_count, current_inflight
-
-        for position in range(total_samples):
-            can_complete[position].wait()
-
-            with state_lock:
-                completed_count += 1
-                current_inflight -= 1
-                assert current_inflight >= 0, "Inflight count went negative"
-
-            scheduler._release_slot()
-            completed[position].set()
-
-    threading.Thread(target=completion_worker, daemon=True).start()
-
-    def issue_worker():
-        """Issues queries through scheduler."""
+    async def sender():
         nonlocal issued_count, current_inflight, max_inflight
+        position = 0
+        async for _ in scheduler:
+            issued_count += 1
+            current_inflight += 1
+            max_inflight = max(max_inflight, current_inflight)
+            assert (
+                current_inflight <= target_concurrency
+            ), f"Concurrency {current_inflight} exceeded limit {target_concurrency}"
+            position += 1
+            await asyncio.sleep(0)  # yield to let completer run
 
-        for position, _ in enumerate(scheduler):
-            with state_lock:
-                issued_count += 1
-                current_inflight += 1
-                max_inflight = max(max_inflight, current_inflight)
-                assert (
-                    current_inflight <= target_concurrency
-                ), f"Concurrency {current_inflight} exceeded limit {target_concurrency}"
-            issued[position].set()
+    async def completer():
+        nonlocal completed_count, current_inflight
+        for position in range(total_samples):
+            # Wait until this sample can be completed
+            await can_complete[position].wait()
+            completed_count += 1
+            current_inflight -= 1
+            scheduler.notify_complete()
 
-    issue_thread = threading.Thread(target=issue_worker, daemon=True)
-    issue_thread.start()
+    async def orchestrator():
+        """Drive completions to unblock the sender."""
+        # Phase 1: First target_concurrency issue immediately (no completions needed)
+        # Let sender fill up to capacity
+        await asyncio.sleep(0.01)
 
-    try:
-        # Phase 1: First target_concurrency queries issue immediately
-        for position in range(target_concurrency):
-            issued[position].wait()
+        # Phase 2: Complete samples one at a time to unblock more issuance
+        for i in range(total_samples):
+            can_complete[i].set()
+            await asyncio.sleep(0)  # yield to let completer + sender run
 
-        with state_lock:
-            assert issued_count == target_concurrency
-            assert completed_count == 0
-            assert current_inflight == target_concurrency
+    await asyncio.gather(sender(), completer(), orchestrator())
 
-        # Phase 2: Verify scheduler blocks when at capacity, unblocks on completion
-        for position in range(target_concurrency, total_samples):
-            position_to_complete = position - target_concurrency
-
-            # Verify next query hasn't issued yet (scheduler is blocking)
-            assert not issued[
-                position
-            ].is_set(), f"Query {position} issued before slot was freed"
-
-            # Free a slot
-            can_complete[position_to_complete].set()
-            completed[position_to_complete].wait()
-
-            # Verify next query now issues
-            issued[position].wait()
-
-            with state_lock:
-                assert current_inflight == target_concurrency
-
-        # Phase 3: Complete remaining queries and cleanup
-        for position in range(target_concurrency, total_samples):
-            can_complete[position].set()
-            completed[position].wait()
-
-        issue_thread.join()
-
-        # Final validation
-        with state_lock:
-            assert issued_count == total_samples
-            assert completed_count == total_samples
-            assert current_inflight == 0
-            assert max_inflight == target_concurrency
-
-    finally:
-        SampleEventHandler.clear_hooks()
+    assert issued_count == total_samples
+    assert completed_count == total_samples
+    assert current_inflight == 0
+    assert max_inflight == target_concurrency
 
 
 @pytest.mark.parametrize("target_qps", [50.0, 100.0, 500.0, 1000.0], indirect=True)

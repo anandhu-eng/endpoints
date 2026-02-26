@@ -19,12 +19,14 @@ TODO: PoC only, subject to change!
 Benchmark command implementation."""
 
 import argparse
+import asyncio
 import json
 import logging
 import os
 import shutil
 import signal
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,7 +67,10 @@ from inference_endpoint.dataset_manager.dataset import Dataset
 from inference_endpoint.dataset_manager.factory import DataLoaderFactory
 from inference_endpoint.endpoint_client.config import HTTPClientConfig
 from inference_endpoint.endpoint_client.cpu_affinity import pin_loadgen
-from inference_endpoint.endpoint_client.http_client import HTTPEndpointClient
+from inference_endpoint.endpoint_client.http_client import (
+    AsyncHttpEndpointClient,
+    HTTPEndpointClient,
+)
 from inference_endpoint.endpoint_client.http_sample_issuer import HttpClientSampleIssuer
 from inference_endpoint.evaluation import Extractor
 from inference_endpoint.evaluation.scoring import Scorer
@@ -155,6 +160,304 @@ class AccuracyConfiguration:
     report_dir: os.PathLike
     ground_truth_column: str | None
     num_repeats: int
+
+
+@dataclass
+class BenchmarkSetup:
+    """All prepared state needed by a benchmark runner."""
+
+    config: BenchmarkConfig
+    tokenizer: Any
+    report_dir: Path
+    dataloader: Dataset
+    scheduler: Scheduler
+    rt_settings: RuntimeSettings
+    http_config: HTTPClientConfig
+    total_samples: int
+    collect_responses: bool
+    enable_streaming: bool
+    affinity_plan: Any
+    accuracy_datasets: list[Dataset]
+    eval_configs: list[AccuracyConfiguration]
+    model_name: str
+    load_pattern_type: LoadPatternType
+    endpoints: list[str]
+    test_mode: TestMode
+    benchmark_mode: TestType | None
+
+
+def setup_benchmark(
+    config: BenchmarkConfig,
+    test_mode: TestMode,
+    benchmark_mode: TestType | None,
+) -> BenchmarkSetup:
+    """Common setup for both sync and async benchmark runners.
+
+    Handles: CPU affinity, tokenizer, report dir, streaming, datasets,
+    scheduler, HTTP client config. Returns a BenchmarkSetup with all
+    prepared state.
+    """
+    collect_responses = test_mode in [TestMode.ACC, TestMode.BOTH]
+
+    # CPU affinity
+    affinity_plan = None
+    if config.enable_cpu_affinity:
+        affinity_plan = pin_loadgen(config.settings.client.workers)
+
+    # Model name
+    model_name = config.model_params.name
+    if not model_name and config.submission_ref:
+        model_name = config.submission_ref.model
+        config.model_params.name = model_name
+    if not model_name:
+        raise InputValidationError("No model name provided")
+
+    # Report directory
+    report_dir = (
+        Path(config.report_dir) if config.report_dir else get_default_report_path()
+    )
+    report_dir.mkdir(parents=True, exist_ok=True)
+    config.to_yaml_file(report_dir / "config.yaml")
+
+    # Tokenizer
+    tokenizer = None
+    try:
+        logger.info(f"Loading tokenizer for model: {model_name}")
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        logger.info("Tokenizer loaded successfully")
+    except Exception as e:
+        logger.warning(f"Failed to load tokenizer for {model_name}: {e}")
+        logger.warning("Continuing without tokenizer (report metrics may be limited)")
+
+    # Streaming mode
+    streaming_mode = config.model_params.streaming
+    if streaming_mode == StreamingMode.ON:
+        enable_streaming = True
+    elif streaming_mode == StreamingMode.OFF:
+        enable_streaming = False
+    else:
+        enable_streaming = benchmark_mode == TestType.ONLINE
+        config.model_params.streaming = (
+            StreamingMode.ON if enable_streaming else StreamingMode.OFF
+        )
+
+    # Datasets
+    accuracy_configs = [d for d in config.datasets if d.type == DatasetType.ACCURACY]
+    performance_configs = [
+        d for d in config.datasets if d.type == DatasetType.PERFORMANCE
+    ]
+    if not performance_configs and not accuracy_configs:
+        raise InputValidationError("No performance or accuracy datasets provided")
+
+    # Accuracy datasets
+    accuracy_datasets: list[Dataset] = []
+    eval_configs: list[AccuracyConfiguration] = []
+    for acc_config in accuracy_configs:
+        assert (
+            acc_config.accuracy_config is not None
+        ), f"accuracy_config must be set for dataset {acc_config.name}"
+        assert (
+            acc_config.accuracy_config.eval_method is not None
+        ), f"eval_method must be set for dataset {acc_config.name}"
+        assert (
+            acc_config.accuracy_config.extractor is not None
+        ), f"extractor must be set for dataset {acc_config.name}"
+
+        dataset = DataLoaderFactory.create_loader(
+            acc_config, num_repeats=acc_config.accuracy_config.num_repeats
+        )
+        accuracy_datasets.append(dataset)
+        eval_configs.append(
+            AccuracyConfiguration(
+                Scorer.get(acc_config.accuracy_config.eval_method),
+                Extractor.get(acc_config.accuracy_config.extractor),
+                acc_config.name,
+                dataset,
+                report_dir,
+                acc_config.accuracy_config.ground_truth,
+                acc_config.accuracy_config.num_repeats,
+            )
+        )
+        dataset.load(
+            api_type=config.endpoint_config.api_type,
+            model_params=config.model_params,
+        )
+        logger.info(f"Loaded {dataset} - {dataset.num_samples()} samples")
+
+    if not accuracy_configs:
+        logger.info("No accuracy datasets provided")
+
+    if len(performance_configs) > 1:
+        logger.warning(
+            "Multiple performance datasets provided, only the first one will be used"
+        )
+
+    # Performance dataset
+    try:
+        dataloader = DataLoaderFactory.create_loader(performance_configs[0])
+        dataloader.load(
+            api_type=config.endpoint_config.api_type, model_params=config.model_params
+        )
+        logger.info(f"Loaded {dataloader.num_samples()} samples")
+    except FileNotFoundError as e:
+        raise InputValidationError(
+            f"Dataset file not found: {performance_configs[0].path}"
+        ) from e
+    except Exception as e:
+        raise SetupError(f"Failed to load dataset: {e}") from e
+
+    # Runtime settings + scheduler
+    rt_settings = RuntimeSettings.from_config(config, dataloader.num_samples())
+    load_pattern_type = config.settings.load_pattern.type
+
+    total_samples = rt_settings.total_samples_to_issue()
+    if accuracy_datasets:
+        total_samples += sum(
+            dataset.num_samples() * dataset.repeats for dataset in accuracy_datasets
+        )
+
+    try:
+        scheduler_class = Scheduler.get_implementation(load_pattern_type)
+        scheduler = scheduler_class(rt_settings, WithoutReplacementSampleOrder)
+        logger.info(
+            f"Scheduler: {scheduler_class.__name__} (pattern: {load_pattern_type.value})"
+        )
+    except KeyError as e:
+        raise SetupError(str(e)) from e
+
+    logger.info(
+        f"Mode: {test_mode}, Target QPS: {config.settings.load_pattern.target_qps}, Responses: {collect_responses}"
+    )
+    logger.info(
+        f"Min Duration: {rt_settings.min_duration_ms / 1000:.1f}s, Expected samples: {total_samples}"
+    )
+
+    # HTTP client config
+    endpoints = config.endpoint_config.endpoints
+    assert endpoints is not None
+    api_type: APIType = config.endpoint_config.api_type
+
+    http_config = HTTPClientConfig(
+        endpoint_urls=[urljoin(e, api_type.default_route()) for e in endpoints],
+        api_type=api_type,
+        num_workers=config.settings.client.workers,
+        record_worker_events=config.settings.client.record_worker_events,
+        event_logs_dir=report_dir,
+        log_level=config.settings.client.log_level,
+        cpu_affinity=affinity_plan,
+        warmup_connections=config.settings.client.warmup_connections,
+        max_connections=config.settings.client.max_connections,
+        api_key=config.endpoint_config.api_key,
+    )
+
+    return BenchmarkSetup(
+        config=config,
+        tokenizer=tokenizer,
+        report_dir=report_dir,
+        dataloader=dataloader,
+        scheduler=scheduler,
+        rt_settings=rt_settings,
+        http_config=http_config,
+        total_samples=total_samples,
+        collect_responses=collect_responses,
+        enable_streaming=enable_streaming,
+        affinity_plan=affinity_plan,
+        accuracy_datasets=accuracy_datasets,
+        eval_configs=eval_configs,
+        model_name=model_name,
+        load_pattern_type=load_pattern_type,
+        endpoints=endpoints,
+        test_mode=test_mode,
+        benchmark_mode=benchmark_mode,
+    )
+
+
+def post_benchmark(
+    setup: BenchmarkSetup,
+    report: Any,
+    response_collector: ResponseCollector,
+) -> None:
+    """Shared post-benchmark processing: accuracy scoring, results JSON, error summary."""
+    if report is None:
+        logger.error(
+            "Session report missing — benchmark reporter failed to produce results"
+        )
+        raise ExecutionError(
+            "Session report missing — cannot produce benchmark results"
+        )
+
+    elapsed_time = report.duration_ns / 1e9
+    total = report.n_samples_issued
+    success_count = report.n_samples_completed
+    estimated_qps = report.qps or 0.0
+
+    logger.info(f"Completed in {elapsed_time:.1f}s")
+    logger.info(f"Results: {success_count}/{total} successful")
+    logger.info(f"Estimated QPS: {estimated_qps:.1f}")
+
+    # Accuracy scoring
+    accuracy_scores: dict[str, Any] = {}
+    for eval_config in setup.eval_configs:
+        scorer_instance = eval_config.scorer(
+            eval_config.dataset_name,
+            eval_config.dataset,
+            eval_config.report_dir,
+            extractor=eval_config.extractor,
+            ground_truth_column=eval_config.ground_truth_column,
+        )
+        score, n_repeats = scorer_instance.score()
+        assert eval_config.dataset.data is not None
+        accuracy_scores[eval_config.dataset_name] = {
+            "dataset_name": eval_config.dataset_name,
+            "num_samples": len(eval_config.dataset.data),
+            "extractor": eval_config.extractor.__name__,
+            "ground_truth_column": eval_config.ground_truth_column,
+            "score": score,
+            "n_repeats": n_repeats,
+        }
+        logger.info(
+            f"Score for {eval_config.dataset_name}: {score} ({n_repeats} repeats)"
+        )
+
+    # Error summary
+    if response_collector.errors:
+        logger.warning(f"Errors: {len(response_collector.errors)}")
+        if setup.config.verbose:
+            for error in response_collector.errors[:3]:
+                logger.warning(f"  {error}")
+            if len(response_collector.errors) > 3:
+                logger.warning(f"  ... +{len(response_collector.errors) - 3} more")
+
+    # Results JSON
+    try:
+        results: dict[str, Any] = {
+            "config": {
+                "endpoint": setup.endpoints,
+                "mode": setup.test_mode.value
+                if hasattr(setup.test_mode, "value")
+                else str(setup.test_mode),
+                "target_qps": setup.config.settings.load_pattern.target_qps,
+            },
+            "results": {
+                "total": total,
+                "successful": success_count,
+                "failed": total - success_count,
+                "elapsed_time": elapsed_time,
+                "qps": estimated_qps,
+            },
+        }
+        if accuracy_scores:
+            results["accuracy_scores"] = accuracy_scores
+        if setup.collect_responses:
+            results["responses"] = response_collector.responses
+        if response_collector.errors:
+            results["errors"] = response_collector.errors
+        results_path = setup.report_dir / "results.json"
+        with open(results_path, "w") as f:
+            json.dump(results, f, indent=2)
+        logger.info(f"Saved: {results_path}")
+    except Exception as e:
+        logger.error(f"Save failed: {e}")
 
 
 async def run_benchmark_command(args: argparse.Namespace) -> None:
@@ -251,11 +554,31 @@ async def run_benchmark_command(args: argparse.Namespace) -> None:
         logger.exception("Config validation error")
         raise InputValidationError(str(e)) from e
 
-    # Determine if we should collect responses
-    collect_responses = test_mode in [TestMode.ACC, TestMode.BOTH]
+    # Common setup
+    setup = setup_benchmark(effective_config, test_mode, benchmark_mode)
 
-    # Run benchmark
-    _run_benchmark(effective_config, collect_responses, test_mode, benchmark_mode)
+    # Select execution engine and run
+    use_async = os.environ.get("INFERENCE_ENDPOINT_ASYNC", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if use_async:
+        logger.info("Using single-loop async benchmark engine (uvloop)")
+        from inference_endpoint.commands.benchmark_async import (
+            run_benchmark as run_benchmark_async,
+        )
+
+        report, response_collector = await run_benchmark_async(setup)
+    else:
+        from inference_endpoint.commands.benchmark_sync import (
+            run_benchmark as run_benchmark_sync,
+        )
+
+        report, response_collector = run_benchmark_sync(setup)
+
+    # Shared post-processing: accuracy scoring, results.json, error summary
+    post_benchmark(setup, report, response_collector)
 
 
 def _build_config_from_cli(
@@ -739,3 +1062,356 @@ def _run_benchmark(
             except Exception as e:
                 if config.verbose:
                     logger.warning(f"Cleanup error: {e}")
+
+
+# =============================================================================
+# Single-loop async benchmark (uvloop)
+# =============================================================================
+
+
+async def _run_benchmark_async(
+    config: BenchmarkConfig,
+    collect_responses: bool,
+    test_mode: TestMode,
+    benchmark_mode: TestType | None,
+) -> None:
+    """Execute benchmark on a single uvloop — no threads in the main process.
+
+    Architecture:
+    - AsyncHttpEndpointClient on the running loop (not sync wrapper)
+    - ZmqEventRecordPublisher for event recording (sync ZMQ PUB NOBLOCK)
+    - EventWriterProcess in background for SQLite writes
+    - Online: loop.call_at() callback chain for Poisson scheduling
+    - Offline: tight send loop + sleep(0) every 1000
+    - Unified receiver: poll() + sleep(0) when idle (benchmark_httpclient.py pattern)
+    """
+    from inference_endpoint.async_utils.transport.record import (
+        SampleEventType,
+        SessionEventType,
+    )
+    from inference_endpoint.async_utils.transport.zmq.pubsub import (
+        ZmqEventRecordPublisher,
+    )
+    from inference_endpoint.core.types import Query, StreamChunk
+    from inference_endpoint.metrics.recorder_subprocess import (
+        AsyncEventRecorder,
+        EventWriterProcess,
+    )
+    from inference_endpoint.metrics.reporter import MetricsReporter
+
+    loop = asyncio.get_running_loop()
+    loop.set_task_factory(asyncio.eager_task_factory)  # type: ignore[arg-type]
+
+    # ── Setup (same as _run_benchmark) ────────────────────────────────────
+
+    affinity_plan = None
+    if config.enable_cpu_affinity:
+        affinity_plan = pin_loadgen(config.settings.client.workers)
+
+    tokenizer = None
+    model_name = config.model_params.name
+    if not model_name and config.submission_ref:
+        model_name = config.submission_ref.model
+        config.model_params.name = model_name
+
+    report_dir = (
+        Path(config.report_dir) if config.report_dir else get_default_report_path()
+    )
+    report_dir.mkdir(parents=True, exist_ok=True)
+    config.to_yaml_file(report_dir / "config.yaml")
+
+    if model_name:
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(model_name)
+        except Exception as e:
+            logger.warning(f"Failed to load tokenizer for {model_name}: {e}")
+    else:
+        raise InputValidationError("No model name provided")
+
+    streaming_mode = config.model_params.streaming
+    enable_streaming = streaming_mode == StreamingMode.ON or (
+        streaming_mode == StreamingMode.AUTO and benchmark_mode == TestType.ONLINE
+    )
+    if streaming_mode == StreamingMode.AUTO:
+        config.model_params.streaming = (
+            StreamingMode.ON if enable_streaming else StreamingMode.OFF
+        )
+
+    # Dataset loading
+    performance_configs = [
+        c for c in config.datasets if c.type == DatasetType.PERFORMANCE
+    ]
+    if not performance_configs:
+        raise InputValidationError("No performance datasets provided")
+    dataloader = DataLoaderFactory.create_loader(performance_configs[0])
+    dataloader.load(
+        api_type=config.endpoint_config.api_type, model_params=config.model_params
+    )
+
+    rt_settings = RuntimeSettings.from_config(config, dataloader.num_samples())
+    load_pattern_type = config.settings.load_pattern.type
+    total_samples = rt_settings.total_samples_to_issue()
+
+    scheduler_class = Scheduler.get_implementation(load_pattern_type)
+    scheduler = scheduler_class(rt_settings, WithoutReplacementSampleOrder)
+
+    # ── Create HTTP client on the running loop ────────────────────────────
+
+    endpoints = config.endpoint_config.endpoints
+    assert endpoints is not None
+    api_type_val: APIType = config.endpoint_config.api_type
+
+    http_config = HTTPClientConfig(
+        endpoint_urls=[urljoin(e, api_type_val.default_route()) for e in endpoints],
+        api_type=api_type_val,
+        num_workers=config.settings.client.workers,
+        record_worker_events=config.settings.client.record_worker_events,
+        event_logs_dir=report_dir,
+        log_level=config.settings.client.log_level,
+        cpu_affinity=affinity_plan,
+        warmup_connections=config.settings.client.warmup_connections,
+        max_connections=config.settings.client.max_connections,
+        api_key=config.endpoint_config.api_key,
+    )
+
+    # Declare resources upfront for finally block — safe to check even if
+    # setup fails partway through (all start as None).
+    zmq_ctx: ManagedZMQContext | None = None
+    http_client: AsyncHttpEndpointClient | None = None
+    publisher: ZmqEventRecordPublisher | None = None
+    writer: EventWriterProcess | None = None
+    recorder: AsyncEventRecorder | None = None
+    pbar: tqdm | None = None
+    session_ended = False
+    stop_requested = False
+
+    try:
+        # ── Resource creation ─────────────────────────────────────────────
+
+        zmq_ctx = ManagedZMQContext(io_threads=4)
+
+        # Client construction blocks on run_coroutine_threadsafe, so use to_thread
+        http_client = await asyncio.to_thread(
+            AsyncHttpEndpointClient, http_config, loop=loop, zmq_context=zmq_ctx
+        )
+
+        # ── Event recording infrastructure ────────────────────────────────
+
+        session_id = f"cli_benchmark_{uuid.uuid4().hex[:8]}"
+        pub_addr = f"ipc://{zmq_ctx.socket_dir}/ev_pub_{session_id[:8]}"
+        publisher = ZmqEventRecordPublisher(pub_addr, zmq_ctx, loop=loop)
+
+        writer = EventWriterProcess(session_id, publisher.bind_address)
+        writer.start(sub_settle_s=0.5)  # blocking: waits for subscriber readiness
+
+        idle_event = asyncio.Event()
+        recorder = AsyncEventRecorder(publisher, session_id, notify_idle=idle_event)
+
+        # ── Progress bar + response collector ─────────────────────────────
+
+        pbar = tqdm(
+            desc=f"{model_name} (Streaming: {enable_streaming})",
+            total=total_samples,
+            smoothing=0,
+        )
+        response_collector = ResponseCollector(
+            collect_responses=collect_responses, pbar=pbar
+        )
+
+        # ── Signal handling ───────────────────────────────────────────────
+
+        send_done = False
+        stop_requested = False
+        uuid_to_index: dict[str, int] = {}
+
+        def on_sigint():
+            nonlocal stop_requested, send_done
+            logger.warning("Interrupt received, stopping benchmark...")
+            stop_requested = True
+            send_done = True  # unblock receiver drain check
+
+        loop.add_signal_handler(signal.SIGINT, on_sigint)
+
+        # ── Send + Receive ────────────────────────────────────────────────
+
+        recorder.record_event(SessionEventType.STARTED, time.monotonic_ns())
+
+        def handle_response(result):
+            """Process a received response (QueryResult or StreamChunk)."""
+            ts = time.monotonic_ns()
+            match result:
+                case StreamChunk(is_complete=False):
+                    metadata = result.metadata or {}
+                    if metadata.get("first_chunk", False):
+                        recorder.record_event(
+                            SampleEventType.RECV_FIRST,
+                            ts,
+                            sample_uuid=result.id,
+                            data={"response_chunk": result.response_chunk},
+                        )
+                    else:
+                        recorder.record_event(
+                            SampleEventType.RECV_NON_FIRST,
+                            ts,
+                            sample_uuid=result.id,
+                        )
+                case QueryResult(error=err):
+                    if err is not None:
+                        logger.error(f"Error in request {result.id}: {err}")
+                    recorder.record_event(
+                        SampleEventType.COMPLETE,
+                        ts,
+                        sample_uuid=result.id,
+                        data=result.response_output,
+                    )
+                    response_collector.on_complete_hook(result)
+                    scheduler.notify_complete()
+
+        async def receiver():
+            """Unified receiver: poll() + sleep(0) when idle."""
+            while True:
+                result = http_client.poll()
+                if result is not None:
+                    handle_response(result)
+                else:
+                    if send_done and (
+                        recorder.n_inflight_samples <= 0 or stop_requested
+                    ):
+                        break
+                    await asyncio.sleep(0)
+
+        def issue_sample(s_idx: int) -> str:
+            """Issue a single sample — shared by all send paths."""
+            sample_uuid = uuid.uuid4().hex
+            sample_data = dataloader.load_sample(s_idx)
+            ts = time.monotonic_ns()
+            recorder.record_event(
+                SampleEventType.ISSUE_CALLED, ts, sample_uuid=sample_uuid
+            )
+            http_client.issue(Query(id=sample_uuid, data=sample_data))
+            uuid_to_index[sample_uuid] = s_idx
+            return sample_uuid
+
+        if load_pattern_type == LoadPatternType.MAX_THROUGHPUT:
+            # Offline: tight send loop, yield every 1000
+            async def sender():
+                nonlocal send_done
+                sent = 0
+                for s_idx, _ in scheduler:
+                    if stop_requested:
+                        break
+                    issue_sample(s_idx)
+                    sent += 1
+                    if sent % 1000 == 0:
+                        await asyncio.sleep(0)
+                send_done = True
+        else:
+            # Online (Poisson / Concurrency): scheduler.__aiter__ handles timing
+            async def sender():
+                nonlocal send_done
+                async for s_idx in scheduler:
+                    if stop_requested:
+                        break
+                    issue_sample(s_idx)
+                send_done = True
+
+        await asyncio.gather(sender(), receiver())
+
+        # Restore default SIGINT so Ctrl+C raises KeyboardInterrupt during
+        # post-benchmark reporting and cleanup (no more flag-only handler).
+        loop.remove_signal_handler(signal.SIGINT)
+
+        # ── Post-benchmark ────────────────────────────────────────────────
+
+        recorder.record_event(
+            SessionEventType.STOP_PERFORMANCE_TRACKING, time.monotonic_ns()
+        )
+        recorder.should_check_idle = True
+        recorder.record_event(SessionEventType.STOP_LOADGEN, time.monotonic_ns())
+
+        if recorder.n_inflight_samples > 0 and not stop_requested:
+            try:
+                await asyncio.wait_for(idle_event.wait(), timeout=config.timeout or 300)
+            except TimeoutError:
+                logger.warning(
+                    f"Timed out waiting for {recorder.n_inflight_samples} inflight samples"
+                )
+
+        recorder.record_event(SessionEventType.ENDED, time.monotonic_ns())
+        session_ended = True
+        writer.stop()
+
+    except KeyboardInterrupt:
+        logger.warning("Benchmark interrupted by user")
+    except Exception as e:
+        logger.error(f"Benchmark failed: {e}")
+        raise ExecutionError(f"Benchmark execution failed: {e}") from e
+    finally:
+        # Each step guarded individually — failure in one doesn't skip the rest.
+        # Order: signal → pbar → session ended → writer → client → report → zmq
+
+        try:
+            loop.remove_signal_handler(signal.SIGINT)
+        except Exception:
+            pass
+
+        if pbar:
+            try:
+                pbar.close()
+            except Exception:
+                pass
+
+        if recorder and not session_ended:
+            try:
+                recorder.record_event(SessionEventType.ENDED, time.monotonic_ns())
+            except Exception:
+                pass
+
+        if writer:
+            try:
+                writer.stop(timeout=5.0)
+            except Exception:
+                pass
+
+        if http_client:
+            try:
+                await http_client.shutdown()
+            except Exception:
+                pass
+
+        # Reset CPU affinity — loadgen pinning no longer needed,
+        # use all cores for report tokenization
+        try:
+            os.sched_setaffinity(0, range(os.cpu_count() or 1))
+        except (OSError, AttributeError):
+            pass
+        os.environ["TOKENIZERS_PARALLELISM"] = "true"
+
+        if recorder:
+            try:
+                with MetricsReporter(
+                    recorder.connection_name, client_type="sqlite"
+                ) as reporter:
+                    report = reporter.create_report(tokenizer)
+                    report.display(fn=print, summary_only=True)
+
+                    if report_dir:
+                        report.to_json(save_to=report_dir / "result_summary.json")
+                        with open(report_dir / "report.txt", "w") as f:
+                            report.display(fn=f.write, summary_only=False, newline="\n")
+                        reporter.dump_to_json(report_dir / "events.jsonl")
+                        logger.info(f"Report saved to: {report_dir}")
+            except Exception as e:
+                logger.warning(f"Report generation failed: {e}")
+
+        if publisher:
+            try:
+                publisher.close()
+            except Exception:
+                pass
+
+        if zmq_ctx:
+            try:
+                zmq_ctx.cleanup()
+            except Exception:
+                pass

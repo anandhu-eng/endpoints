@@ -136,6 +136,7 @@ class SampleEventType(EventType):
     __category__ = "sample"
 
     ISSUED = "issued"
+    ISSUE_CALLED = "issue_called"
     COMPLETE = "complete"
     RECV_FIRST = "recv_first"
     RECV_NON_FIRST = "recv_non_first"

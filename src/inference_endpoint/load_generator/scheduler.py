@@ -13,14 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import asyncio
 import random
-import threading
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 
 from ..config.runtime_settings import RuntimeSettings
 from ..config.schema import LoadPatternType
-from .sample import SampleEvent, SampleEventHandler
 
 
 class SampleOrder(ABC):
@@ -280,7 +279,7 @@ class Scheduler:
                 rng=self.runtime_settings.rng_sample_index,
             )
         )
-        self.delay_fn: Callable[[], int] | None = None  # Subclasses must set this
+        self.delay_fn: Callable[[], float] | None = None  # Subclasses must set this
 
     def __iter__(self):
         """Iterate over (sample_index, delay_ns) pairs.
@@ -290,8 +289,43 @@ class Scheduler:
             - sample_index: Index of sample to issue next
             - delay_ns: Nanoseconds to wait before issuing
         """
+        delay_fn = self.delay_fn
+        assert delay_fn is not None, "delay_fn must be set by subclass before iteration"
         for s_idx in self.sample_order:
-            yield s_idx, self.delay_fn()
+            yield s_idx, delay_fn()
+
+    async def __aiter__(self) -> AsyncIterator[int]:
+        """Async iterate over sample indices with precise timing.
+
+        Uses loop.call_at() + Future for scheduling — proven accurate up to
+        500k QPS (see ablation_call_at_limits.py). Accumulates absolute target
+        times to avoid drift.
+
+        Yields:
+            Sample index to issue next (timing is handled internally).
+        """
+        loop = asyncio.get_running_loop()
+        target = loop.time()
+        delay_fn = self.delay_fn
+        assert delay_fn is not None, "delay_fn must be set by subclass before iteration"
+        for s_idx in self.sample_order:
+            delay_ns = delay_fn()
+            if delay_ns > 0:
+                target += delay_ns / 1e9
+                now = loop.time()
+                if target > now:
+                    fut = loop.create_future()
+                    loop.call_at(target, fut.set_result, None)
+                    await fut
+            yield s_idx
+
+    def notify_complete(self) -> None:
+        """Notify the scheduler that a sample has completed.
+
+        No-op by default. ConcurrencyScheduler overrides this to release
+        a semaphore slot. Called by the receiver after processing a QueryResult.
+        """
+        pass
 
     def __init_subclass__(cls, load_pattern: LoadPatternType | None = None, **kwargs):
         """Auto-register scheduler implementations.
@@ -336,14 +370,22 @@ class Scheduler:
 
 
 class MaxThroughputScheduler(Scheduler, load_pattern=LoadPatternType.MAX_THROUGHPUT):
-    """Offline max throughput scheduler (all queries at t=0).
+    """Offline max throughput scheduler — zero delay, maximum send rate.
+
+    No delay function, no timing logic. Yields sample indices as fast as
+    the caller can consume them. The caller (benchmark.py sender) controls
+    yielding to the event loop (sleep(0) every N sends).
 
     Auto-registers for LoadPatternType.MAX_THROUGHPUT.
     """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.delay_fn = uniform_delay_fn(rng=self.runtime_settings.rng_sched)
+    def __iter__(self):
+        for s_idx in self.sample_order:
+            yield s_idx, 0
+
+    async def __aiter__(self) -> AsyncIterator[int]:
+        for s_idx in self.sample_order:
+            yield s_idx
 
 
 class PoissonDistributionScheduler(Scheduler, load_pattern=LoadPatternType.POISSON):
@@ -384,37 +426,23 @@ class ConcurrencyScheduler(Scheduler, load_pattern=LoadPatternType.CONCURRENCY):
                 f"target_concurrency must be > 0 for CONCURRENCY load pattern, got {target_concurrency}"
             )
 
-        # Use threading.Condition for concurrency control with explicit counter
-        self._condition = threading.Condition()
-        self._inflight = 0
         self._target_concurrency = target_concurrency
-
-        # Register completion hook - free up slot when query completes
-        SampleEventHandler.register_hook(SampleEvent.COMPLETE, self._release_slot)
-
-        # Unused (required by Scheduler interface) - returns 0 delay
+        self._semaphore: asyncio.Semaphore | None = None
         self.delay_fn = lambda: 0
 
-    def _release_slot(self, result=None):
-        """Release a concurrency slot and notify waiting threads.
+    def notify_complete(self) -> None:
+        """Release a concurrency slot so the next sample can be issued."""
+        if self._semaphore is not None:
+            self._semaphore.release()
 
-        Args:
-            result: QueryResult from completed query (unused, required by hook signature)
-        """
-        with self._condition:
-            self._inflight -= 1
-            self._condition.notify()
+    async def __aiter__(self) -> AsyncIterator[int]:
+        """Async iterate with concurrency control via asyncio.Semaphore.
 
-    def __iter__(self):
+        Sender acquires a slot before yielding each sample. Receiver calls
+        notify_complete() which releases the slot after each QueryResult.
         """
-        Iterate over sample indices to issue.
-        Yields sample indices until total_samples_to_issue is reached.
+        self._semaphore = asyncio.Semaphore(self._target_concurrency)
 
-        Waits for available concurrency slot before yielding each sample index.
-        """
         for s_idx in self.sample_order:
-            with self._condition:
-                while self._inflight >= self._target_concurrency:
-                    self._condition.wait()
-                self._inflight += 1
-            yield s_idx, 0
+            await self._semaphore.acquire()
+            yield s_idx

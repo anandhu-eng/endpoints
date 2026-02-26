@@ -436,7 +436,14 @@ def _create_client(
             f"max_connections={config.max_connections}, stream={streaming}"
         )
 
+<<<<<<< HEAD
     client = AsyncHttpEndpointClient(config, zmq_context=zmq_context)
+||||||| parent of 2557c11 (add async-benchmark)
+    client = AsyncHttpEndpointClient(config)
+=======
+    zmq_ctx = ManagedZMQContext(io_threads=4)
+    client = AsyncHttpEndpointClient(config, zmq_context=zmq_ctx)
+>>>>>>> 2557c11 (add async-benchmark)
     query_data = {
         "prompt": prompt,
         "model": "benchmark-model",
