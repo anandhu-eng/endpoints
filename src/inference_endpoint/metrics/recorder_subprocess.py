@@ -72,7 +72,6 @@ _TOPIC_TO_SQLITE_EVENT_TYPE: dict[str, str] = {
     "session.stop_performance_tracking": "stop_performance_tracking",
     # Sample events
     "sample.issued": "loadgen_issue_called",
-    "sample.issue_called": "loadgen_issue_called",
     "sample.complete": "complete",
     "sample.recv_first": "first_chunk_received",
     "sample.recv_non_first": "non_first_chunk_received",
@@ -418,7 +417,7 @@ class AsyncEventRecorder:
                   old EventRecorder behavior).
         """
         # Update inflight sample tracking
-        if ev_type == SampleEventType.ISSUE_CALLED:
+        if ev_type == SampleEventType.ISSUED:
             self.n_inflight_samples += 1
         elif ev_type == SampleEventType.COMPLETE:
             self.n_inflight_samples -= 1

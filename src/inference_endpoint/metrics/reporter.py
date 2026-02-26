@@ -1010,6 +1010,7 @@ class MetricsReporter:
             if output_sequence is None:
                 continue
 
+            # Concatenate reasoning and output if reasoning exists
             if reasoning_sequence is not None:
                 full_sequence = f"{reasoning_sequence} {output_sequence}"
             else:
@@ -1104,6 +1105,9 @@ class MetricsReporter:
             if data_bytes is None or len(data_bytes) == 0:
                 continue
 
+            # Extract output from decoded data
+            # For TPOT calculation, we need the output to be a list of chunks (streaming mode) with at least 2
+            # elements
             output_sequence, reasoning_sequence = output_sequence_from_data(
                 data_bytes, join_chunks=False
             )
@@ -1114,18 +1118,28 @@ class MetricsReporter:
             if isinstance(reasoning_sequence, list):
                 all_chunks.extend(reasoning_sequence)
 
+            # For TPOT, we need streaming data (list of chunks with at least 2 elements)
             if len(all_chunks) < 2:
                 continue
 
+            # Skip samples that are not in the filtered rollups (i.e., issued after STOP_PERFORMANCE_TRACKING)
             if sample_uuid not in sample_latency_rollup:
                 continue
 
+            # Output can be in one of two formats depending on the issuer:
+            # 1. A list of all chunks (i.e. ['chunk1', 'chunk2', ...])
+            # 2. A 2 item list of ['chunk1', 'chunk2chunk3...']
+            # Both of these are valid as we only need to distinguish the first chunk for the purposes of TPOT calculation.
+            # The choice is up to the issuer implementation depending on performance considerations.
+
+            # Join list elements to get the non-first chunk text
             if len(all_chunks) > 2:
                 non_first_chunk = "".join(str(chunk) for chunk in all_chunks[1:])
             else:
                 non_first_chunk = str(all_chunks[1])
 
             if len(non_first_chunk) == 0:
+                # Possible malformed output data where empty string is included as a non-first chunk
                 continue
 
             eligible.append((sample_uuid, non_first_chunk))

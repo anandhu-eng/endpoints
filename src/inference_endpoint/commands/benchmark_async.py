@@ -194,7 +194,7 @@ async def run_benchmark(
             sample_data = setup.dataloader.load_sample(s_idx)
             ts = time.monotonic_ns()
             recorder.record_event(
-                SampleEventType.ISSUE_CALLED,
+                SampleEventType.ISSUED,
                 ts,
                 sample_uuid=sample_uuid,
             )

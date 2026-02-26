@@ -139,7 +139,7 @@ def test_cross_process_recorder_throughput(n_samples: int):
                     sample_uuid=sample_uuid,
                 )
                 recorder.record_event(
-                    SampleEventType.ISSUE_CALLED,
+                    SampleEventType.ISSUED,
                     ts,
                     sample_uuid=sample_uuid,
                 )
@@ -241,7 +241,7 @@ def test_cross_process_recorder_throughput_with_verification(n_samples: int):
                     sample_uuid=sample_uuid,
                 )
                 recorder.record_event(
-                    SampleEventType.ISSUE_CALLED,
+                    SampleEventType.ISSUED,
                     ts,
                     sample_uuid=sample_uuid,
                 )
@@ -364,7 +364,7 @@ def test_cross_process_recorder_streaming_throughput(n_samples: int):
                     sample_uuid=sample_uuid,
                 )
                 recorder.record_event(
-                    SampleEventType.ISSUE_CALLED,
+                    SampleEventType.ISSUED,
                     ts,
                     sample_uuid=sample_uuid,
                 )
@@ -493,7 +493,7 @@ def test_implied_qps_capacity():
                     sample_uuid=sample_uuid,
                 )
                 recorder.record_event(
-                    SampleEventType.ISSUE_CALLED,
+                    SampleEventType.ISSUED,
                     ts,
                     sample_uuid=sample_uuid,
                 )

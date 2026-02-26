@@ -1285,9 +1285,7 @@ async def _run_benchmark_async(
             sample_uuid = uuid.uuid4().hex
             sample_data = dataloader.load_sample(s_idx)
             ts = time.monotonic_ns()
-            recorder.record_event(
-                SampleEventType.ISSUE_CALLED, ts, sample_uuid=sample_uuid
-            )
+            recorder.record_event(SampleEventType.ISSUED, ts, sample_uuid=sample_uuid)
             http_client.issue(Query(id=sample_uuid, data=sample_data))
             uuid_to_index[sample_uuid] = s_idx
             return sample_uuid
