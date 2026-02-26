@@ -297,9 +297,8 @@ class Scheduler:
     async def __aiter__(self) -> AsyncIterator[int]:
         """Async iterate over sample indices with precise timing.
 
-        Uses loop.call_at() + Future for scheduling — proven accurate up to
-        500k QPS (see ablation_call_at_limits.py). Accumulates absolute target
-        times to avoid drift.
+        Uses loop.call_at() + Future for scheduling — proven accurate up to 500k QPS.
+        Accumulates absolute target times to avoid drift.
 
         Yields:
             Sample index to issue next (timing is handled internally).
