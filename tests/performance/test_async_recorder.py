@@ -16,8 +16,8 @@
 """
 Performance tests for cross-process event recording pipeline.
 
-Measures end-to-end throughput of the AsyncEventRecorder → ZmqEventRecordPublisher
-(main process) → EventWriterProcess (child process, SQLite at /dev/shm) pipeline.
+Measures end-to-end throughput of the AsyncEventReporter → ZmqEventRecordPublisher
+(main process) → AsyncEventRecorder (child process, SQLite at /dev/shm) pipeline.
 
 This is the actual architecture used by _run_benchmark_async in benchmark.py.
 The ablation script (scripts/ablation_event_recording.py) only measures single-process
@@ -41,10 +41,8 @@ from inference_endpoint.async_utils.transport.record import (
 )
 from inference_endpoint.async_utils.transport.zmq.context import ManagedZMQContext
 from inference_endpoint.async_utils.transport.zmq.pubsub import ZmqEventRecordPublisher
-from inference_endpoint.metrics.recorder_subprocess import (
-    AsyncEventRecorder,
-    EventWriterProcess,
-)
+from inference_endpoint.metrics.async_recorder import AsyncEventRecorder
+from inference_endpoint.metrics.async_reporter import AsyncEventReporter
 
 # =============================================================================
 # Config
@@ -112,64 +110,70 @@ def test_cross_process_recorder_throughput(n_samples: int):
             pub_addr = f"ipc://{zmq_ctx.socket_dir}/ev_pub_{session_id[:8]}"
             publisher = ZmqEventRecordPublisher(pub_addr, zmq_ctx, loop=loop)
 
-            writer = EventWriterProcess(session_id, publisher.bind_address)
-            writer.start(sub_settle_s=SUB_SETTLE_S)
-
-            idle_event = asyncio.Event()
-            recorder = AsyncEventRecorder(publisher, session_id, notify_idle=idle_event)
-
-            # Suppress GC during measurement
-            gc_was_enabled = gc.isenabled()
-            gc.collect()
-            gc.disable()
-
-            # --- Hot loop: 3 events per sample ---
-            recorder.record_event(SessionEventType.STARTED, time.monotonic_ns())
-
-            start_ns = time.monotonic_ns()
-
-            for _ in range(n_samples):
-                sample_uuid = uuid.uuid4().hex
-                ts = time.monotonic_ns()
-
-                # Sender-side events
-                recorder.record_event(
-                    SampleEventType.ISSUED,
-                    ts,
-                    sample_uuid=sample_uuid,
-                )
-                recorder.record_event(
-                    SampleEventType.ISSUED,
-                    ts,
-                    sample_uuid=sample_uuid,
+            with AsyncEventRecorder(
+                session_id,
+                publisher.bind_address,
+                sub_settle_s=SUB_SETTLE_S,
+                stop_timeout=30.0,
+            ):
+                idle_event = asyncio.Event()
+                recorder = AsyncEventReporter(
+                    publisher, session_id, notify_idle=idle_event
                 )
 
-                # Receiver-side event (in real benchmark, this comes later)
+                # Suppress GC during measurement
+                gc_was_enabled = gc.isenabled()
+                gc.collect()
+                gc.disable()
+
+                # --- Hot loop: 3 events per sample ---
+                recorder.record_event(SessionEventType.STARTED, time.monotonic_ns())
+
+                start_ns = time.monotonic_ns()
+
+                for _ in range(n_samples):
+                    sample_uuid = uuid.uuid4().hex
+                    ts = time.monotonic_ns()
+
+                    # Sender-side events
+                    recorder.record_event(
+                        SampleEventType.ISSUED,
+                        ts,
+                        sample_uuid=sample_uuid,
+                    )
+                    recorder.record_event(
+                        SampleEventType.ISSUED,
+                        ts,
+                        sample_uuid=sample_uuid,
+                    )
+
+                    # Receiver-side event (in real benchmark, this comes later)
+                    recorder.record_event(
+                        SampleEventType.COMPLETE,
+                        time.monotonic_ns(),
+                        sample_uuid=sample_uuid,
+                        data={"response": "ok"},
+                    )
+
+                publish_elapsed_ns = time.monotonic_ns() - start_ns
+
+                # Restore GC
+                if gc_was_enabled:
+                    gc.enable()
+
+                # Signal end and wait for subscriber to finish writing
                 recorder.record_event(
-                    SampleEventType.COMPLETE,
-                    time.monotonic_ns(),
-                    sample_uuid=sample_uuid,
-                    data={"response": "ok"},
+                    SessionEventType.STOP_PERFORMANCE_TRACKING, time.monotonic_ns()
                 )
+                recorder.record_event(
+                    SessionEventType.STOP_LOADGEN, time.monotonic_ns()
+                )
+                recorder.record_event(SessionEventType.ENDED, time.monotonic_ns())
 
-            publish_elapsed_ns = time.monotonic_ns() - start_ns
+                # Allow time for ZMQ to deliver remaining messages
+                time.sleep(1.0)
 
-            # Restore GC
-            if gc_was_enabled:
-                gc.enable()
-
-            # Signal end and wait for subscriber to finish writing
-            recorder.record_event(
-                SessionEventType.STOP_PERFORMANCE_TRACKING, time.monotonic_ns()
-            )
-            recorder.record_event(SessionEventType.STOP_LOADGEN, time.monotonic_ns())
-            recorder.record_event(SessionEventType.ENDED, time.monotonic_ns())
-
-            # Allow time for ZMQ to deliver remaining messages
-            time.sleep(1.0)
-            writer.stop(timeout=30.0)
-
-            total_elapsed_ns = time.monotonic_ns() - start_ns
+                total_elapsed_ns = time.monotonic_ns() - start_ns
 
             publisher.close()
 
@@ -217,56 +221,62 @@ def test_cross_process_recorder_throughput_with_verification(n_samples: int):
             pub_addr = f"ipc://{zmq_ctx.socket_dir}/ev_pub_{session_id[:8]}"
             publisher = ZmqEventRecordPublisher(pub_addr, zmq_ctx, loop=loop)
 
-            writer = EventWriterProcess(session_id, publisher.bind_address)
-            writer.start(sub_settle_s=SUB_SETTLE_S)
-
-            idle_event = asyncio.Event()
-            recorder = AsyncEventRecorder(publisher, session_id, notify_idle=idle_event)
-
-            gc_was_enabled = gc.isenabled()
-            gc.collect()
-            gc.disable()
-
-            recorder.record_event(SessionEventType.STARTED, time.monotonic_ns())
-
-            start_ns = time.monotonic_ns()
-
-            for _ in range(n_samples):
-                sample_uuid = uuid.uuid4().hex
-                ts = time.monotonic_ns()
-
-                recorder.record_event(
-                    SampleEventType.ISSUED,
-                    ts,
-                    sample_uuid=sample_uuid,
-                )
-                recorder.record_event(
-                    SampleEventType.ISSUED,
-                    ts,
-                    sample_uuid=sample_uuid,
-                )
-                recorder.record_event(
-                    SampleEventType.COMPLETE,
-                    time.monotonic_ns(),
-                    sample_uuid=sample_uuid,
-                    data={"response": "ok"},
+            with AsyncEventRecorder(
+                session_id,
+                publisher.bind_address,
+                sub_settle_s=SUB_SETTLE_S,
+                stop_timeout=30.0,
+            ):
+                idle_event = asyncio.Event()
+                recorder = AsyncEventReporter(
+                    publisher, session_id, notify_idle=idle_event
                 )
 
-            publish_elapsed_ns = time.monotonic_ns() - start_ns
+                gc_was_enabled = gc.isenabled()
+                gc.collect()
+                gc.disable()
 
-            if gc_was_enabled:
-                gc.enable()
+                recorder.record_event(SessionEventType.STARTED, time.monotonic_ns())
 
-            recorder.record_event(
-                SessionEventType.STOP_PERFORMANCE_TRACKING, time.monotonic_ns()
-            )
-            recorder.record_event(SessionEventType.STOP_LOADGEN, time.monotonic_ns())
-            recorder.record_event(SessionEventType.ENDED, time.monotonic_ns())
+                start_ns = time.monotonic_ns()
 
-            time.sleep(1.0)
-            writer.stop(timeout=30.0)
+                for _ in range(n_samples):
+                    sample_uuid = uuid.uuid4().hex
+                    ts = time.monotonic_ns()
 
-            total_elapsed_ns = time.monotonic_ns() - start_ns
+                    recorder.record_event(
+                        SampleEventType.ISSUED,
+                        ts,
+                        sample_uuid=sample_uuid,
+                    )
+                    recorder.record_event(
+                        SampleEventType.ISSUED,
+                        ts,
+                        sample_uuid=sample_uuid,
+                    )
+                    recorder.record_event(
+                        SampleEventType.COMPLETE,
+                        time.monotonic_ns(),
+                        sample_uuid=sample_uuid,
+                        data={"response": "ok"},
+                    )
+
+                publish_elapsed_ns = time.monotonic_ns() - start_ns
+
+                if gc_was_enabled:
+                    gc.enable()
+
+                recorder.record_event(
+                    SessionEventType.STOP_PERFORMANCE_TRACKING, time.monotonic_ns()
+                )
+                recorder.record_event(
+                    SessionEventType.STOP_LOADGEN, time.monotonic_ns()
+                )
+                recorder.record_event(SessionEventType.ENDED, time.monotonic_ns())
+
+                time.sleep(1.0)
+
+                total_elapsed_ns = time.monotonic_ns() - start_ns
 
             publisher.close()
 
@@ -339,70 +349,77 @@ def test_cross_process_recorder_streaming_throughput(n_samples: int):
             pub_addr = f"ipc://{zmq_ctx.socket_dir}/ev_pub_{session_id[:8]}"
             publisher = ZmqEventRecordPublisher(pub_addr, zmq_ctx, loop=loop)
 
-            writer = EventWriterProcess(session_id, publisher.bind_address)
-            writer.start(sub_settle_s=SUB_SETTLE_S)
-
-            idle_event = asyncio.Event()
-            recorder = AsyncEventRecorder(publisher, session_id, notify_idle=idle_event)
-
-            gc_was_enabled = gc.isenabled()
-            gc.collect()
-            gc.disable()
-
-            recorder.record_event(SessionEventType.STARTED, time.monotonic_ns())
-
-            start_ns = time.monotonic_ns()
-
-            for _ in range(n_samples):
-                sample_uuid = uuid.uuid4().hex
-                ts = time.monotonic_ns()
-
-                # Sender-side
-                recorder.record_event(
-                    SampleEventType.ISSUED,
-                    ts,
-                    sample_uuid=sample_uuid,
-                )
-                recorder.record_event(
-                    SampleEventType.ISSUED,
-                    ts,
-                    sample_uuid=sample_uuid,
+            with AsyncEventRecorder(
+                session_id,
+                publisher.bind_address,
+                sub_settle_s=SUB_SETTLE_S,
+                stop_timeout=30.0,
+            ):
+                idle_event = asyncio.Event()
+                recorder = AsyncEventReporter(
+                    publisher, session_id, notify_idle=idle_event
                 )
 
-                # Receiver-side (streaming)
+                gc_was_enabled = gc.isenabled()
+                gc.collect()
+                gc.disable()
+
+                recorder.record_event(SessionEventType.STARTED, time.monotonic_ns())
+
+                start_ns = time.monotonic_ns()
+
+                for _ in range(n_samples):
+                    sample_uuid = uuid.uuid4().hex
+                    ts = time.monotonic_ns()
+
+                    # Sender-side
+                    recorder.record_event(
+                        SampleEventType.ISSUED,
+                        ts,
+                        sample_uuid=sample_uuid,
+                    )
+                    recorder.record_event(
+                        SampleEventType.ISSUED,
+                        ts,
+                        sample_uuid=sample_uuid,
+                    )
+
+                    # Receiver-side (streaming)
+                    recorder.record_event(
+                        SampleEventType.RECV_FIRST,
+                        time.monotonic_ns(),
+                        sample_uuid=sample_uuid,
+                        data={"response_chunk": "first"},
+                    )
+                    recorder.record_event(
+                        SampleEventType.RECV_NON_FIRST,
+                        time.monotonic_ns(),
+                        sample_uuid=sample_uuid,
+                    )
+                    recorder.record_event(
+                        SampleEventType.COMPLETE,
+                        time.monotonic_ns(),
+                        sample_uuid=sample_uuid,
+                        data={"response": "ok"},
+                    )
+
+                publish_elapsed_ns = time.monotonic_ns() - start_ns
+
+                if gc_was_enabled:
+                    gc.enable()
+
                 recorder.record_event(
-                    SampleEventType.RECV_FIRST,
-                    time.monotonic_ns(),
-                    sample_uuid=sample_uuid,
-                    data={"response_chunk": "first"},
+                    SessionEventType.STOP_PERFORMANCE_TRACKING, time.monotonic_ns()
                 )
                 recorder.record_event(
-                    SampleEventType.RECV_NON_FIRST,
-                    time.monotonic_ns(),
-                    sample_uuid=sample_uuid,
+                    SessionEventType.STOP_LOADGEN, time.monotonic_ns()
                 )
-                recorder.record_event(
-                    SampleEventType.COMPLETE,
-                    time.monotonic_ns(),
-                    sample_uuid=sample_uuid,
-                    data={"response": "ok"},
-                )
+                recorder.record_event(SessionEventType.ENDED, time.monotonic_ns())
 
-            publish_elapsed_ns = time.monotonic_ns() - start_ns
+                time.sleep(1.0)
 
-            if gc_was_enabled:
-                gc.enable()
+                total_elapsed_ns = time.monotonic_ns() - start_ns
 
-            recorder.record_event(
-                SessionEventType.STOP_PERFORMANCE_TRACKING, time.monotonic_ns()
-            )
-            recorder.record_event(SessionEventType.STOP_LOADGEN, time.monotonic_ns())
-            recorder.record_event(SessionEventType.ENDED, time.monotonic_ns())
-
-            time.sleep(1.0)
-            writer.stop(timeout=30.0)
-
-            total_elapsed_ns = time.monotonic_ns() - start_ns
             publisher.close()
 
         return publish_elapsed_ns, total_elapsed_ns
@@ -470,48 +487,51 @@ def test_implied_qps_capacity():
             pub_addr = f"ipc://{zmq_ctx.socket_dir}/ev_pub_{session_id[:8]}"
             publisher = ZmqEventRecordPublisher(pub_addr, zmq_ctx, loop=loop)
 
-            writer = EventWriterProcess(session_id, publisher.bind_address)
-            writer.start(sub_settle_s=SUB_SETTLE_S)
+            with AsyncEventRecorder(
+                session_id,
+                publisher.bind_address,
+                sub_settle_s=SUB_SETTLE_S,
+                stop_timeout=30.0,
+            ):
+                recorder = AsyncEventReporter(publisher, session_id)
 
-            recorder = AsyncEventRecorder(publisher, session_id)
+                gc_was_enabled = gc.isenabled()
+                gc.collect()
+                gc.disable()
 
-            gc_was_enabled = gc.isenabled()
-            gc.collect()
-            gc.disable()
+                recorder.record_event(SessionEventType.STARTED, time.monotonic_ns())
 
-            recorder.record_event(SessionEventType.STARTED, time.monotonic_ns())
+                start_ns = time.monotonic_ns()
 
-            start_ns = time.monotonic_ns()
+                for _ in range(n_samples):
+                    sample_uuid = uuid.uuid4().hex
+                    ts = time.monotonic_ns()
 
-            for _ in range(n_samples):
-                sample_uuid = uuid.uuid4().hex
-                ts = time.monotonic_ns()
+                    recorder.record_event(
+                        SampleEventType.ISSUED,
+                        ts,
+                        sample_uuid=sample_uuid,
+                    )
+                    recorder.record_event(
+                        SampleEventType.ISSUED,
+                        ts,
+                        sample_uuid=sample_uuid,
+                    )
+                    recorder.record_event(
+                        SampleEventType.COMPLETE,
+                        time.monotonic_ns(),
+                        sample_uuid=sample_uuid,
+                        data={"response": "ok"},
+                    )
 
-                recorder.record_event(
-                    SampleEventType.ISSUED,
-                    ts,
-                    sample_uuid=sample_uuid,
-                )
-                recorder.record_event(
-                    SampleEventType.ISSUED,
-                    ts,
-                    sample_uuid=sample_uuid,
-                )
-                recorder.record_event(
-                    SampleEventType.COMPLETE,
-                    time.monotonic_ns(),
-                    sample_uuid=sample_uuid,
-                    data={"response": "ok"},
-                )
+                elapsed_ns = time.monotonic_ns() - start_ns
 
-            elapsed_ns = time.monotonic_ns() - start_ns
+                if gc_was_enabled:
+                    gc.enable()
 
-            if gc_was_enabled:
-                gc.enable()
+                recorder.record_event(SessionEventType.ENDED, time.monotonic_ns())
+                time.sleep(1.0)
 
-            recorder.record_event(SessionEventType.ENDED, time.monotonic_ns())
-            time.sleep(1.0)
-            writer.stop(timeout=30.0)
             publisher.close()
 
         return elapsed_ns

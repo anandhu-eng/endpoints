@@ -203,7 +203,8 @@ def setup_benchmark(
     report_dir.mkdir(parents=True, exist_ok=True)
     config.to_yaml_file(report_dir / "config.yaml")
 
-    # Tokenizer
+    # Load tokenizer if model name is provided
+    # Priority: CLI args (offline/online modes) > config submission_ref (from-config mode)
     tokenizer = None
     try:
         logger.info(f"Loading tokenizer for model: {model_name}")
@@ -213,7 +214,7 @@ def setup_benchmark(
         logger.warning(f"Failed to load tokenizer for {model_name}: {e}")
         logger.warning("Continuing without tokenizer (report metrics may be limited)")
 
-    # Streaming mode
+    # Determine if streaming should be enabled based on config
     streaming_mode = config.model_params.streaming
     if streaming_mode == StreamingMode.ON:
         enable_streaming = True
@@ -234,12 +235,15 @@ def setup_benchmark(
         raise InputValidationError("No performance or accuracy datasets provided")
 
     # Accuracy datasets
+    # Pack the evaluation parameters for each accuracy dataset
     accuracy_datasets: list[Dataset] = []
     eval_configs: list[AccuracyConfiguration] = []
     for acc_config in accuracy_configs:
+        # Type narrowing: ensure accuracy_config is not None
         assert (
             acc_config.accuracy_config is not None
         ), f"accuracy_config must be set for dataset {acc_config.name}"
+        # Type narrowing: ensure required fields are not None
         assert (
             acc_config.accuracy_config.eval_method is not None
         ), f"eval_method must be set for dataset {acc_config.name}"
@@ -251,6 +255,7 @@ def setup_benchmark(
             acc_config, num_repeats=acc_config.accuracy_config.num_repeats
         )
         accuracy_datasets.append(dataset)
+        # TODO add tests and defaults
         eval_configs.append(
             AccuracyConfiguration(
                 Scorer.get(acc_config.accuracy_config.eval_method),
@@ -290,16 +295,18 @@ def setup_benchmark(
     except Exception as e:
         raise SetupError(f"Failed to load dataset: {e}") from e
 
-    # Runtime settings + scheduler
+    # Setup runtime settings using factory method
     rt_settings = RuntimeSettings.from_config(config, dataloader.num_samples())
     load_pattern_type = config.settings.load_pattern.type
 
+    # Calculate and display expected sample count
     total_samples = rt_settings.total_samples_to_issue()
     if accuracy_datasets:
         total_samples += sum(
             dataset.num_samples() * dataset.repeats for dataset in accuracy_datasets
         )
 
+    # Create scheduler using __init_subclass__ registry
     try:
         scheduler_class = Scheduler.get_implementation(load_pattern_type)
         scheduler = scheduler_class(rt_settings, WithoutReplacementSampleOrder)
@@ -373,8 +380,10 @@ def post_benchmark(
     elapsed_time = report.duration_ns / 1e9
     total = report.n_samples_issued
     success_count = report.n_samples_completed
+    # qps will be None if duration was 0, so fall back to 0.0
     estimated_qps = report.qps or 0.0
 
+    # Report results
     logger.info(f"Completed in {elapsed_time:.1f}s")
     logger.info(f"Results: {success_count}/{total} successful")
     logger.info(f"Estimated QPS: {estimated_qps:.1f}")
@@ -434,8 +443,10 @@ def post_benchmark(
             results["accuracy_scores"] = accuracy_scores
         if setup.collect_responses:
             results["responses"] = response_collector.responses
+        # Always save all errors (useful for debugging)
         if response_collector.errors:
             results["errors"] = response_collector.errors
+        # Save results to JSON file
         results_path = setup.report_dir / "results.json"
         with open(results_path, "w") as f:
             json.dump(results, f, indent=2)

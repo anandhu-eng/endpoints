@@ -13,13 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Background process for SQLite event recording via ZMQ PUB/SUB, and
-lightweight publisher for the single-loop benchmark architecture.
+"""Background process for SQLite event recording via ZMQ PUB/SUB.
 
 Replaces the EventRecorder's writer thread with a separate OS process.
 Uses the existing ZmqEventRecordSubscriber infrastructure from async_utils.
 
-The main process publishes EventRecords via EventPublisherService (ZMQ PUB,
+The main process publishes EventRecords via ZmqEventRecordPublisher (ZMQ PUB,
 non-blocking). This module runs a subscriber in a separate OS process that
 receives events and batch-writes them to SQLite at /dev/shm.
 
@@ -36,23 +35,15 @@ import multiprocessing
 import multiprocessing.synchronize
 import sqlite3
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
 
 import orjson
 import uvloop
 
 from inference_endpoint.async_utils.transport.record import (
     EventRecord,
-    EventType,
-    SampleEventType,
     SessionEventType,
 )
 from inference_endpoint.async_utils.transport.zmq.context import ManagedZMQContext
-
-if TYPE_CHECKING:
-    from inference_endpoint.async_utils.transport.zmq.pubsub import (
-        ZmqEventRecordPublisher,
-    )
 from inference_endpoint.async_utils.transport.zmq.pubsub import (
     ZmqEventRecordSubscriber,
 )
@@ -253,14 +244,19 @@ def _subscriber_main(
 # ---------------------------------------------------------------------------
 
 
-class EventWriterProcess:
+class AsyncEventRecorder:
     """Manages a background process that subscribes to EventPublisherService
     and writes events to SQLite.
 
-    Usage:
-        publisher = EventPublisherService(zmq_ctx)
-        writer = EventWriterProcess(session_id, publisher.bind_address)
-        writer.start()
+    Usage (context manager):
+        with AsyncEventRecorder(session_id, publisher.bind_address, sub_settle_s=0.5) as writer:
+            recorder = AsyncEventReporter(publisher, session_id)
+            # ... benchmark runs, publisher.publish() events ...
+            recorder.record_event(SessionEventType.ENDED, time.monotonic_ns())
+
+    Usage (manual):
+        writer = AsyncEventRecorder(session_id, publisher.bind_address)
+        writer.start(sub_settle_s=0.5)
         # ... benchmark runs, publisher.publish() events ...
         writer.stop()
     """
@@ -270,14 +266,32 @@ class EventWriterProcess:
         session_id: str,
         publisher_address: str,
         txn_buffer_size: int = 1000,
+        sub_settle_s: float = 0.3,
+        start_timeout: float = 10.0,
+        stop_timeout: float = 10.0,
     ):
         self.session_id = session_id
         self.publisher_address = publisher_address
         self.txn_buffer_size = txn_buffer_size
+        self.sub_settle_s = sub_settle_s
+        self.start_timeout = start_timeout
+        self.stop_timeout = stop_timeout
         self.db_path = Path(f"/dev/shm/mlperf_testsession_{session_id}.db")
         self._process: multiprocessing.Process | None = None
 
-    def start(self, timeout: float = 10.0, sub_settle_s: float = 0.3) -> None:
+    def __enter__(self) -> AsyncEventRecorder:
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        # On error, use a short timeout — the subscriber may not have received
+        # SESSION_ENDED, so a long wait would just delay the inevitable kill.
+        timeout = self.stop_timeout if exc_type is None else 2.0
+        self.stop(timeout=timeout)
+
+    def start(
+        self, timeout: float | None = None, sub_settle_s: float | None = None
+    ) -> None:
         """Start the background subscriber process.
 
         Blocks until the subscriber signals readiness (connected and subscribed),
@@ -288,13 +302,16 @@ class EventWriterProcess:
         not on the hot path.
 
         Args:
-            timeout: Max seconds to wait for subscriber readiness.
-            sub_settle_s: Extra blocking sleep for ZMQ subscription propagation.
+            timeout: Max seconds to wait for subscriber readiness (default: self.start_timeout).
+            sub_settle_s: Extra blocking sleep for ZMQ subscription propagation (default: self.sub_settle_s).
 
         Raises:
             TimeoutError: If subscriber doesn't become ready in time.
         """
         import time
+
+        timeout = timeout if timeout is not None else self.start_timeout
+        sub_settle_s = sub_settle_s if sub_settle_s is not None else self.sub_settle_s
 
         ready_event = multiprocessing.Event()
         self._process = multiprocessing.Process(
@@ -315,135 +332,28 @@ class EventWriterProcess:
             if self._process.is_alive():
                 self._process.kill()
             raise TimeoutError(
-                f"EventWriterProcess did not become ready within {timeout}s"
+                f"AsyncEventRecorder did not become ready within {timeout}s"
             )
 
         # Blocking sleep for ZMQ PUB/SUB subscription propagation
         time.sleep(sub_settle_s)
 
         logger.debug(
-            f"EventWriterProcess started (pid={self._process.pid}, "
+            f"AsyncEventRecorder started (pid={self._process.pid}, "
             f"db={self.db_path})"
         )
 
-    def stop(self, timeout: float = 10.0) -> None:
+    def stop(self, timeout: float | None = None) -> None:
         """Wait for the background process to finish (it stops on SESSION_ENDED)."""
+        timeout = timeout if timeout is not None else self.stop_timeout
         if self._process is not None and self._process.is_alive():
             self._process.join(timeout=timeout)
             if self._process.is_alive():
-                logger.warning("EventWriterProcess did not stop, killing")
+                logger.warning("AsyncEventRecorder did not stop, killing")
                 self._process.kill()
                 self._process.join(timeout=2.0)
-        logger.debug("EventWriterProcess stopped")
+        logger.debug("AsyncEventRecorder stopped")
 
     @property
     def is_alive(self) -> bool:
         return self._process is not None and self._process.is_alive()
-
-
-# ---------------------------------------------------------------------------
-# AsyncEventRecorder — lightweight publisher for single-loop benchmark
-# ---------------------------------------------------------------------------
-
-
-class AsyncEventRecorder:
-    """Event recorder for the single-loop benchmark architecture.
-
-    Uses EventType (from async_utils/transport/record.py) natively — no
-    compatibility layer with the old Event enum. Publishes EventRecords
-    via ZmqEventRecordPublisher (sync ZMQ PUB NOBLOCK).
-
-    The background EventWriterProcess subscribes and writes to SQLite,
-    keeping the same schema for MetricsReporter compatibility.
-
-    Usage:
-        publisher = ZmqEventRecordPublisher(addr, zmq_ctx, loop=loop)
-        writer = EventWriterProcess(session_id, publisher.bind_address)
-        writer.start()
-
-        recorder = AsyncEventRecorder(publisher, session_id)
-        recorder.record_event(SessionEventType.STARTED, time.monotonic_ns())
-        recorder.record_event(SampleEventType.ISSUED, ts, sample_uuid=uid)
-        recorder.record_event(SampleEventType.COMPLETE, ts, sample_uuid=uid)
-        recorder.record_event(SessionEventType.ENDED, time.monotonic_ns())
-
-        writer.stop()
-    """
-
-    __slots__ = (
-        "_publisher",
-        "session_id",
-        "n_inflight_samples",
-        "should_check_idle",
-        "notify_idle",
-    )
-
-    def __init__(
-        self,
-        publisher: ZmqEventRecordPublisher,
-        session_id: str,
-        notify_idle: asyncio.Event | None = None,
-    ):
-        from inference_endpoint.async_utils.transport.zmq.pubsub import (
-            ZmqEventRecordPublisher as _Pub,
-        )
-
-        self._publisher: _Pub = publisher
-        self.session_id = session_id
-        self.n_inflight_samples: int = 0
-        self.should_check_idle: bool = False
-        self.notify_idle = notify_idle
-
-    @property
-    def connection_name(self) -> Path:
-        """SQLite database path (same as EventRecorder)."""
-        return Path(f"/dev/shm/mlperf_testsession_{self.session_id}.db")
-
-    def record_event(
-        self,
-        ev_type: EventType,
-        timestamp_ns: int,
-        sample_uuid: str = "",
-        data: Any = None,
-    ) -> None:
-        """Record an event by publishing via ZMQ PUB (sync, non-blocking).
-
-        Args:
-            ev_type: EventType from async_utils/transport/record.py
-                     (SessionEventType, SampleEventType, ErrorEventType).
-            timestamp_ns: Monotonic nanosecond timestamp.
-            sample_uuid: UUID of the sample (empty for session-level events).
-            data: Optional event data (Any — serialized by subscriber, matching
-                  old EventRecorder behavior).
-        """
-        # Update inflight sample tracking
-        if ev_type == SampleEventType.ISSUED:
-            self.n_inflight_samples += 1
-        elif ev_type == SampleEventType.COMPLETE:
-            self.n_inflight_samples -= 1
-
-        # Wrap non-dict data for EventRecord.data (which requires dict)
-        event_data: dict[str, Any]
-        if data is None:
-            event_data = {}
-        elif isinstance(data, dict):
-            event_data = data
-        else:
-            event_data = {"_raw": data}
-
-        self._publisher.publish(
-            EventRecord(
-                event_type=ev_type,
-                timestamp_ns=timestamp_ns,
-                sample_uuid=sample_uuid,
-                data=event_data,
-            )
-        )
-
-        # Check idle
-        if (
-            self.should_check_idle
-            and self.notify_idle is not None
-            and self.n_inflight_samples == 0
-        ):
-            self.notify_idle.set()

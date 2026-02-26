@@ -121,6 +121,7 @@ def run_benchmark(setup: BenchmarkSetup) -> tuple[Any, ResponseCollector]:
             # Wait for test end with ability to interrupt
             def signal_handler(signum, frame):
                 logger.warning("Interrupt signal received, stopping benchmark...")
+                # Raise KeyboardInterrupt to break out of wait_for_test_end()
                 raise KeyboardInterrupt()
 
             # Install our handler, save old one

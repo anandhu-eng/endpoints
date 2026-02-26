@@ -48,7 +48,7 @@ async def run_benchmark(
     Architecture:
     - AsyncHttpEndpointClient on the running loop (not sync wrapper)
     - ZmqEventRecordPublisher for event recording (sync ZMQ PUB NOBLOCK)
-    - EventWriterProcess in background for SQLite writes
+    - AsyncEventRecorder in background for SQLite writes
     - Online: loop.call_at() callback chain for Poisson scheduling
     - Offline: tight send loop + sleep(0) every 1000
     - Unified receiver: poll() + sleep(0) when idle (benchmark_httpclient.py pattern)
@@ -68,10 +68,8 @@ async def run_benchmark(
         ZmqEventRecordPublisher,
     )
     from inference_endpoint.core.types import Query, QueryResult, StreamChunk
-    from inference_endpoint.metrics.recorder_subprocess import (
-        AsyncEventRecorder,
-        EventWriterProcess,
-    )
+    from inference_endpoint.metrics.async_recorder import AsyncEventRecorder
+    from inference_endpoint.metrics.async_reporter import AsyncEventReporter
     from inference_endpoint.metrics.reporter import MetricsReporter
 
     loop = asyncio.get_running_loop()
@@ -82,8 +80,8 @@ async def run_benchmark(
     zmq_ctx: ManagedZMQContext | None = None
     http_client: AsyncHttpEndpointClient | None = None
     publisher: ZmqEventRecordPublisher | None = None
-    writer: EventWriterProcess | None = None
-    recorder: AsyncEventRecorder | None = None
+    writer: AsyncEventRecorder | None = None
+    recorder: AsyncEventReporter | None = None
     pbar: tqdm | None = None
     response_collector = ResponseCollector(collect_responses=setup.collect_responses)
     session_ended = False
@@ -109,11 +107,13 @@ async def run_benchmark(
         pub_addr = f"ipc://{zmq_ctx.socket_dir}/ev_pub_{session_id[:8]}"
         publisher = ZmqEventRecordPublisher(pub_addr, zmq_ctx, loop=loop)
 
-        writer = EventWriterProcess(session_id, publisher.bind_address)
-        writer.start(sub_settle_s=0.5)  # blocking: waits for subscriber readiness
+        writer = AsyncEventRecorder(
+            session_id, publisher.bind_address, sub_settle_s=0.5, stop_timeout=5.0
+        )
+        writer.start()  # blocking: waits for subscriber readiness
 
         idle_event = asyncio.Event()
-        recorder = AsyncEventRecorder(publisher, session_id, notify_idle=idle_event)
+        recorder = AsyncEventReporter(publisher, session_id, notify_idle=idle_event)
 
         # ── Progress bar + response collector ─────────────────────────────
 
@@ -282,7 +282,7 @@ async def run_benchmark(
 
         if writer:
             try:
-                writer.stop(timeout=5.0)
+                writer.stop()
             except Exception:
                 pass
 
