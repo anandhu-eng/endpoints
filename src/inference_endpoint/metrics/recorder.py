@@ -84,14 +84,15 @@ def psycopg3_cursor(conninfo: str):
     # conninfo1 = f"postgresql://postgres:{password}@db.lczeskqdhwkfdgbgttqr.supabase.co:5432/postgres"
 
     # 2/11
-    password1 = "YyM77YSsFGgdkURA"
+    # password1 = "YyM77YSsFGgdkURA"
     # spooler connection
-    conninfo1 = f"postgresql://postgres.lczeskqdhwkfdgbgttqr:{password1}@aws-1-us-east-2.pooler.supabase.com:6543/postgres"
+    # conninfo1 = f"postgresql://postgres.lczeskqdhwkfdgbgttqr:{password1}@aws-1-us-east-2.pooler.supabase.com:6543/postgres"
 
     print(f"connecting to supabase ORIG {conninfo}")
-    print(f"connecting to supabase NEW {conninfo1}")
-    # conn = psycopg.connect(conninfo, autocommit=False)
-    conn = psycopg.connect(conninfo1, autocommit=False)
+    # print(f"connecting to supabase NEW {conninfo1}")
+    ## conn = psycopg.connect(conninfo, autocommit=False)
+    conn = psycopg.connect(conninfo, autocommit=True)  # 3/3 changed to True
+    # conn = psycopg.connect(conninfo1, autocommit=False)
     cursor = conn.cursor()
     print(f" psycopg3_cursor: {cursor}")
     try:
@@ -115,12 +116,15 @@ def register_pg_cleanup(conninfo: str, table_name: str):
 
         try:
             with psycopg.connect(conninfo) as conn:
+                print("DROP the table if it exists \n\n")
                 conn.execute(f"DROP TABLE IF EXISTS {table_name}")
                 conn.commit()
         except Exception:
             pass
 
-    atexit.register(_drop_table)  # del Postgres table
+    # do we want to drop the table ??
+    print("SKIP dropping the table")
+    ## atexit.register(_drop_table)  # del Postgres table
     logger.debug(f"Registered at-exit cleanup for Postgres table {table_name}")
 
 
