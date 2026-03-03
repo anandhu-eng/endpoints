@@ -34,10 +34,32 @@ import orjson
 
 from ..load_generator.events import SampleEvent, SessionEvent
 from ..profiling import profile
-from ..utils import monotime_to_datetime
+from ..utils import monotime_to_datetime, use_all_cpus
 
 if TYPE_CHECKING:
     from transformers import Tokenizer
+
+
+def _batch_token_lengths(tokenizer: Tokenizer, texts: list[str]) -> list[int]:
+    """Return token counts for each text, using batch encoding when available.
+
+    HuggingFace PreTrainedTokenizerFast supports __call__ with a list of strings,
+    which delegates to the Rust tokenizers library for multi-core parallelism.
+    Falls back to sequential tokenizer.tokenize() for other tokenizer types.
+
+    Temporarily widens CPU affinity so Rayon uses all cores (the loadgen may have
+    pinned this process to a subset of cores for the benchmark run).
+    """
+    if callable(tokenizer):
+        try:
+            with use_all_cpus():
+                encoded = tokenizer(
+                    texts, add_special_tokens=False, return_attention_mask=False
+                )
+            return [len(ids) for ids in encoded["input_ids"]]
+        except (TypeError, KeyError):
+            pass
+    return [len(tokenizer.tokenize(t)) for t in texts]
 
 
 class TPOTReportingMode(str, Enum):
@@ -976,7 +998,7 @@ class MetricsReporter:
 
     @profile
     def get_output_sequence_lengths(
-        self, tokenizer: Tokenizer
+        self, tokenizer: Tokenizer, sample_outputs: list | None = None
     ) -> RollupQueryTable | None:
         """Returns a RollupQueryTable representing per-sample output sequence lengths based on a Tokenizer.
 
@@ -984,13 +1006,18 @@ class MetricsReporter:
 
         Args:
             tokenizer: A Tokenizer object from HuggingFace
+            sample_outputs: Pre-fetched sample outputs from get_sample_outputs(). If None, will query the database.
 
         Returns:
             RollupQueryTable: A table containing per-sample output sequence lengths, or None if no complete events found.
         """
-        query_result = self.get_sample_outputs()
+        query_result = (
+            sample_outputs if sample_outputs is not None else self.get_sample_outputs()
+        )
 
-        rows = []
+        # Collect all texts and their UUIDs for batch tokenization
+        sample_uuids = []
+        texts = []
         for sample_uuid, data_bytes in query_result:
             output_sequence, reasoning_sequence = output_sequence_from_data(data_bytes)
 
@@ -1003,12 +1030,15 @@ class MetricsReporter:
             else:
                 full_sequence = output_sequence
 
-            # Tokenize and calculate length
-            output_tokens = tokenizer.tokenize(full_sequence)
-            rows.append((sample_uuid, len(output_tokens)))
+            sample_uuids.append(sample_uuid)
+            texts.append(full_sequence)
 
-        if not rows:
+        if not texts:
             return None
+
+        # Batch tokenize — uses Rust parallelism across all CPU cores when available
+        token_lengths = _batch_token_lengths(tokenizer, texts)
+        rows = list(zip(sample_uuids, token_lengths, strict=False))
 
         return RollupQueryTable("output_sequence_length", None, rows)
 
@@ -1020,6 +1050,7 @@ class MetricsReporter:
         sample_latency_rollup: RollupQueryTable | None = None,
         condense_table: bool = True,
         reporting_mode: TPOTReportingMode = TPOTReportingMode.REQUEST_WEIGHTED,
+        sample_outputs: list | None = None,
     ) -> RollupQueryTable | None:
         """Derives the TPOT metric from the text outputs, ttft, and sample latencies.
 
@@ -1042,6 +1073,7 @@ class MetricsReporter:
                             and number of tokens per sample UUID. This is only supported if reporting_mode is TOKEN_WEIGHTED.
                             If reporting_mode is REQUEST_WEIGHTED, each sample only contributes one entry to the table. (Default: True)
             reporting_mode: TPOT reporting mode (REQUEST_WEIGHTED or TOKEN_WEIGHTED). (Default: REQUEST_WEIGHTED)
+            sample_outputs: Pre-fetched sample outputs from get_sample_outputs(). If None, will query the database.
         """
         if ttft_rollup is None:
             ttft_rollup = self.derive_TTFT()
@@ -1054,16 +1086,16 @@ class MetricsReporter:
             sample_latency_rollup = self.derive_sample_latency()
 
         # Query for COMPLETE events with their data column
-        query_result = self.get_sample_outputs()
+        query_result = (
+            sample_outputs if sample_outputs is not None else self.get_sample_outputs()
+        )
 
         if not query_result:
             return None
 
-        rows = []
-        if condense_table and reporting_mode == TPOTReportingMode.TOKEN_WEIGHTED:
-            repeats = []
-        else:
-            repeats = None
+        # First pass: collect texts and metadata for batch tokenization
+        eligible_samples = []
+        texts = []
 
         for sample_uuid, data_bytes in query_result:
             if data_bytes is None or len(data_bytes) == 0:
@@ -1106,9 +1138,24 @@ class MetricsReporter:
                 # Possible malformed output data where empty string is included as a non-first chunk
                 continue
 
-            non_first_tokens = tokenizer.tokenize(non_first_chunk)
-            n_non_first_tokens = len(non_first_tokens)
+            eligible_samples.append(sample_uuid)
+            texts.append(non_first_chunk)
 
+        if not texts:
+            return None
+
+        # Batch tokenize — uses Rust parallelism across all CPU cores when available
+        token_lengths = _batch_token_lengths(tokenizer, texts)
+
+        rows = []
+        if condense_table and reporting_mode == TPOTReportingMode.TOKEN_WEIGHTED:
+            repeats = []
+        else:
+            repeats = None
+
+        for sample_uuid, n_non_first_tokens in zip(
+            eligible_samples, token_lengths, strict=False
+        ):
             latency = sample_latency_rollup.filter_uuid(sample_uuid, only_first=True)
             if latency is None:
                 raise SampleUUIDNotFoundError(sample_uuid, "events record")
@@ -1279,7 +1326,11 @@ class MetricsReporter:
         output_sequence_lengths = None
         tpot_summary = None
         if tokenizer is not None:
-            osl_rollup = self.get_output_sequence_lengths(tokenizer)
+            # Fetch sample outputs once, share between OSL and TPOT
+            sample_outputs = self.get_sample_outputs()
+            osl_rollup = self.get_output_sequence_lengths(
+                tokenizer, sample_outputs=sample_outputs
+            )
             if osl_rollup is not None:
                 output_sequence_lengths = osl_rollup.summarize()
 
@@ -1290,6 +1341,7 @@ class MetricsReporter:
                     ttft_rollup=ttft_rollup,
                     sample_latency_rollup=sample_latency_rollup,
                     reporting_mode=tpot_reporting_mode,
+                    sample_outputs=sample_outputs,
                 )
                 if tpot_rollup is not None:
                     tpot_summary = tpot_rollup.summarize()

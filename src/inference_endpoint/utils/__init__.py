@@ -21,9 +21,12 @@ This module contains common utilities used throughout the system.
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
+import os
 import time
 import warnings
+from collections.abc import Generator
 from datetime import datetime
 from typing import Any, ClassVar
 
@@ -72,6 +75,38 @@ def byte_quantity_to_str(
     n_bytes = int(n_bytes)
     suffix = suffixes[suffix_idx]
     return f"{n_bytes}{suffix}"
+
+
+@contextlib.contextmanager
+def use_all_cpus() -> Generator[None, None, None]:
+    """Temporarily widen CPU affinity to all cores, then restore.
+
+    Useful when the process has been pinned to a subset of cores (e.g. by
+    pin_loadgen) but a subsequent step needs all cores (e.g. batch tokenization
+    via the Rust tokenizers library / Rayon thread pool).
+
+    No-op on non-Linux platforms or if affinity cannot be changed.
+    """
+    prev_affinity = None
+    try:
+        prev_affinity = os.sched_getaffinity(0)
+        cpu_count = os.cpu_count()
+        if cpu_count is None:
+            raise OSError("cannot determine CPU count")
+        all_cpus = set(range(cpu_count))
+        if prev_affinity != all_cpus:
+            os.sched_setaffinity(0, all_cpus)
+    except (OSError, AttributeError):
+        pass
+
+    try:
+        yield
+    finally:
+        if prev_affinity is not None:
+            try:
+                os.sched_setaffinity(0, prev_affinity)
+            except OSError:
+                pass
 
 
 _G_MONOTIME_DELTA = time.time_ns() - time.monotonic_ns()
