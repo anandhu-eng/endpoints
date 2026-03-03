@@ -113,8 +113,8 @@ class Shopify(
             # Convert product_image (dict with bytes/path) to base64 for parquet storage.
 
             ext_to_format = {"": "JPEG", ".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG"}
-            for _, row in tqdm(
-                df.iterrows(),
+            for row in tqdm(
+                df.to_dict("records"),
                 total=len(df),
                 desc=f"Converting images ({s})",
                 unit="rows",
