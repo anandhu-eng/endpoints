@@ -17,13 +17,13 @@
 
 import base64
 import json
-import random
-from io import BytesIO
+from collections import Counter
 from logging import getLogger
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from tqdm import tqdm
 
 from ...dataset import Dataset, load_from_huggingface
 from . import presets
@@ -60,11 +60,10 @@ class Shopify(
         cls,
         datasets_dir: Path,
         split: list[str] | None = None,
-        seed: int = 0,
-        max_samples: int | None = None,
         force: bool = False,
         token: str | None = None,
         revision: str = "main",
+        **kwargs: Any,
     ) -> pd.DataFrame:
         """Generate the Shopify product catalogue dataset.
 
@@ -72,10 +71,8 @@ class Shopify(
         Use token for gated/private datasets.
 
         Args:
-            datasets_dir: Root datasets directory.
+            datasets_dir: Directory to save transformed dataset.
             split: Splits to load (e.g. ["train", "test"]). Defaults to ["train", "test"].
-            seed: Random seed for sampling.
-            max_samples: Max samples to keep. If None, use full split.
             force: Regenerate even if file exists.
             token: HuggingFace token for gated datasets.
             revision: Dataset revision/branch. Defaults to "main".
@@ -104,55 +101,45 @@ class Shopify(
 
         all_rows: list[dict[str, Any]] = []
         for s in split:
-            try:
-                df = load_from_huggingface(
-                    dataset_path=cls.REPO_ID,
-                    split=s,
-                    cache_dir=datasets_dir / "hf_cache" / cls.DATASET_ID,
-                    load_options=load_options,
-                )
-            except Exception as e:
-                logger.error(f"Error loading dataset: {e}")
-                logger.error("Note: This dataset may require HuggingFace authentication.")
-                logger.error("Run: huggingface-cli login")
-                raise
-
+            df = load_from_huggingface(
+                dataset_path=cls.REPO_ID,
+                split=s,
+                load_options=load_options,
+            )
             logger.info(f"Loaded {len(df)} samples from Shopify product catalogue ({s})")
 
-            # Convert product_image (PIL) to base64 for parquet storage.
-            for _, row in df.iterrows():
+            # Convert product_image (dict with bytes/path) to base64 for parquet storage.
+
+            ext_to_format = {"": "JPEG", ".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG"}
+            format_counts: Counter[str] = Counter()
+            for _, row in tqdm(
+                df.iterrows(),
+                total=len(df),
+                desc=f"Converting images ({s})",
+                unit="rows",
+            ):
                 image = row.get("product_image")
                 if image is None:
                     raise ValueError("product_image is missing from dataset row")
-                img = image if hasattr(image, "save") else image
-                buf = BytesIO()
-                image_format = getattr(img, "format", None) or "PNG"
-                img.save(buf, format=image_format)
-                image_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+                image_base64 = base64.b64encode(image["bytes"]).decode("utf-8")
+                ext = Path(image.get("path", "")).suffix.lower()
+                image_format = ext_to_format.get(ext, "JPEG")
+                format_counts[image_format] += 1
 
                 categories = row.get("potential_product_categories", [])
-                if isinstance(categories, str):
-                    try:
-                        categories = json.loads(categories)
-                    except json.JSONDecodeError:
-                        categories = [categories]
+                if hasattr(categories, "tolist"):
+                    categories = categories.tolist()
 
                 all_rows.append({
                     "product_title": row.get("product_title", ""),
                     "product_description": row.get("product_description", ""),
                     "product_image_base64": image_base64,
                     "product_image_format": image_format,
-                    "potential_product_categories": json.dumps(categories)
-                    if isinstance(categories, (list, dict))
-                    else str(categories),
+                    "potential_product_categories": json.dumps(categories),
                 })
 
-        df = pd.DataFrame(all_rows)
 
-        if max_samples is not None and len(df) > max_samples:
-            rng = random.Random(seed)
-            df = df.sample(n=max_samples, random_state=rng).reset_index(drop=True)
-            logger.info(f"Sampled {max_samples} samples")
+        df = pd.DataFrame(all_rows)
 
         df.to_parquet(dst_path)
         logger.info(f"Saved {len(df)} samples to {dst_path}")

@@ -67,18 +67,9 @@ class ShopifyMultimodalFormatter(RowProcessor):
         """Convert product row to prompt/system for OpenAI vision API."""
         product_title = row.get("product_title", "")
         product_description = row.get("product_description", "")
-        potential_categories = row.get("potential_product_categories", "[]")
+        categories_str = row.get("potential_product_categories", "[]")
         image_base64 = row.get("product_image_base64", "")
         image_format = row.get("product_image_format", "png")
-
-        # Parse categories if stored as JSON string
-        if isinstance(potential_categories, str):
-            try:
-                categories_str = json.dumps(json.loads(potential_categories))
-            except json.JSONDecodeError:
-                categories_str = potential_categories
-        else:
-            categories_str = json.dumps(potential_categories)
 
         schema_str = json.dumps(_product_metadata_schema(), indent=2)
 
