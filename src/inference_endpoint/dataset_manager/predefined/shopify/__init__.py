@@ -113,7 +113,6 @@ class Shopify(
             # Convert product_image (dict with bytes/path) to base64 for parquet storage.
 
             ext_to_format = {"": "JPEG", ".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG"}
-            format_counts: Counter[str] = Counter()
             for _, row in tqdm(
                 df.iterrows(),
                 total=len(df),
@@ -126,7 +125,6 @@ class Shopify(
                 image_base64 = base64.b64encode(image["bytes"]).decode("utf-8")
                 ext = Path(image.get("path", "")).suffix.lower()
                 image_format = ext_to_format.get(ext, "JPEG")
-                format_counts[image_format] += 1
 
                 categories = row.get("potential_product_categories", [])
                 if hasattr(categories, "tolist"):

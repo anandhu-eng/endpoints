@@ -69,7 +69,7 @@ class ShopifyMultimodalFormatter(RowProcessor):
         product_description = row.get("product_description", "")
         categories_str = row.get("potential_product_categories", "[]")
         image_base64 = row.get("product_image_base64", "")
-        image_format = row.get("product_image_format", "png")
+        image_format = row.get("product_image_format", "JPEG")
 
         schema_str = json.dumps(_product_metadata_schema(), indent=2)
 
