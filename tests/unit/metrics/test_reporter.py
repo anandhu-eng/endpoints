@@ -992,3 +992,152 @@ def test_create_report_with_zero_samples_before_stop_performance_tracking(tmp_pa
 
     assert "Duration: N/A" in display_output
     assert "(no performance samples were issued)" in display_output
+
+
+# ──────────────────────────────────────────────────────────────────
+# Tests for exclude_sample_uuids (prefill / warmup exclusion)
+# ──────────────────────────────────────────────────────────────────
+
+
+def _build_prefill_db(tmp_path, sample_uuids, fake_outputs):
+    """Helper: create a DB with prefill events *and* regular perf events."""
+    import sqlite3
+    import uuid as uuid_mod
+
+    uuid1 = sample_uuids(1)
+    uuid2 = sample_uuids(2)
+    uuid_prefill = sample_uuids(10)
+
+    test_db = str(tmp_path / f"test_prefill_{uuid_mod.uuid4().hex}.db")
+    conn = sqlite3.connect(test_db)
+    cur = conn.cursor()
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS events "
+        "(sample_uuid VARCHAR(32), event_type VARCHAR(32), timestamp_ns INTEGER, data BLOB)"
+    )
+
+    events = [
+        # Prefill sample – issued BEFORE TEST_STARTED
+        (uuid_prefill, SessionEvent.LOADGEN_ISSUE_CALLED.value, 4000, b""),
+        (uuid_prefill, SampleEvent.FIRST_CHUNK.value, 4010, b""),
+        (
+            uuid_prefill,
+            SampleEvent.COMPLETE.value,
+            4100,
+            orjson.dumps({"output": ["prefill ", "response"]}),
+        ),
+        # Session bookends
+        ("", SessionEvent.TEST_STARTED.value, 5000, b""),
+        # Regular performance samples
+        (uuid1, SessionEvent.LOADGEN_ISSUE_CALLED.value, 10000, b""),
+        (uuid2, SessionEvent.LOADGEN_ISSUE_CALLED.value, 10003, b""),
+        (uuid1, SampleEvent.FIRST_CHUNK.value, 10010, b""),
+        (uuid2, SampleEvent.FIRST_CHUNK.value, 10190, b""),
+        (
+            uuid1,
+            SampleEvent.COMPLETE.value,
+            10211,
+            orjson.dumps({"output": fake_outputs[uuid1]}),
+        ),
+        (
+            uuid2,
+            SampleEvent.COMPLETE.value,
+            10219,
+            orjson.dumps({"output": fake_outputs[uuid2]}),
+        ),
+        ("", SessionEvent.STOP_PERFORMANCE_TRACKING.value, 10300, b""),
+        ("", SessionEvent.TEST_ENDED.value, 10400, b""),
+    ]
+    cur.executemany(
+        "INSERT INTO events (sample_uuid, event_type, timestamp_ns, data) VALUES (?, ?, ?, ?)",
+        events,
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+    return test_db, uuid_prefill
+
+
+def test_create_report_excludes_prefill_samples(tmp_path, sample_uuids, fake_outputs):
+    """create_report with exclude_sample_uuids should drop prefill samples from all metrics."""
+    test_db, uuid_prefill = _build_prefill_db(tmp_path, sample_uuids, fake_outputs)
+
+    # Without exclusion the prefill sample IS counted (it was issued before STOP_PERFORMANCE_TRACKING)
+    with MetricsReporter(test_db) as reporter:
+        statuses_all = reporter.get_sample_statuses()
+    assert statuses_all["completed"] == 3
+
+    # With exclusion the prefill sample is invisible
+    with MetricsReporter(test_db) as reporter:
+        report = reporter.create_report(exclude_sample_uuids={uuid_prefill})
+
+    assert report.n_samples_issued == 2
+    assert report.n_samples_completed == 2
+
+
+def test_exclude_uuids_does_not_affect_session_events(
+    tmp_path, sample_uuids, fake_outputs
+):
+    """Session-level events (TEST_STARTED, TEST_ENDED, etc.) must survive the exclusion filter."""
+    test_db, uuid_prefill = _build_prefill_db(tmp_path, sample_uuids, fake_outputs)
+
+    with MetricsReporter(test_db) as reporter:
+        report = reporter.create_report(exclude_sample_uuids={uuid_prefill})
+
+    assert report.test_started_at == 5000
+    assert report.duration_ns is not None
+
+
+def test_exclude_uuids_ttft_excludes_prefill(tmp_path, sample_uuids, fake_outputs):
+    """TTFT derivation should not include excluded prefill samples."""
+    test_db, uuid_prefill = _build_prefill_db(tmp_path, sample_uuids, fake_outputs)
+
+    with MetricsReporter(test_db) as reporter:
+        # Apply exclusions, then derive TTFT
+        reporter._apply_uuid_exclusions({uuid_prefill})
+        ttft = reporter.derive_TTFT()
+
+    # Only the two regular samples should appear
+    assert len(ttft) == 2
+    assert uuid_prefill not in ttft
+
+
+def test_exclude_uuids_latency_excludes_prefill(tmp_path, sample_uuids, fake_outputs):
+    """Sample latency should not include excluded prefill samples."""
+    test_db, uuid_prefill = _build_prefill_db(tmp_path, sample_uuids, fake_outputs)
+
+    with MetricsReporter(test_db) as reporter:
+        reporter._apply_uuid_exclusions({uuid_prefill})
+        latency = reporter.derive_sample_latency()
+
+    assert len(latency) == 2
+    assert uuid_prefill not in latency
+
+
+def test_dump_to_json_before_exclusion_contains_prefill(
+    tmp_path, sample_uuids, fake_outputs
+):
+    """dump_to_json called BEFORE exclusion should still include prefill events."""
+    test_db, uuid_prefill = _build_prefill_db(tmp_path, sample_uuids, fake_outputs)
+    jsonl_path = tmp_path / "events.jsonl"
+
+    with MetricsReporter(test_db) as reporter:
+        # Dump BEFORE applying exclusions
+        reporter.dump_to_json(jsonl_path)
+
+    lines = jsonl_path.read_text().splitlines()
+    prefill_lines = [
+        line for line in lines if uuid_prefill in line
+    ]
+    assert len(prefill_lines) > 0, "Prefill events should be present in the full dump"
+
+
+def test_exclude_empty_set_is_noop(tmp_path, sample_uuids, fake_outputs):
+    """Passing an empty set should behave the same as None (no exclusion)."""
+    test_db, _ = _build_prefill_db(tmp_path, sample_uuids, fake_outputs)
+
+    with MetricsReporter(test_db) as reporter:
+        report = reporter.create_report(exclude_sample_uuids=set())
+
+    # All 3 samples (including prefill) should be counted
+    assert report.n_samples_completed == 3

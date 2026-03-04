@@ -525,6 +525,29 @@ def _run_benchmark(
         logger.error("Dataset load failed")
         raise SetupError(f"Failed to load dataset: {e}") from e
 
+    # Load prefill (warmup) dataset if configured
+    prefill_configs = [
+        config for config in config.datasets if config.type == DatasetType.PREFILL
+    ]
+    prefill_dataset = None
+    if prefill_configs:
+        if len(prefill_configs) > 1:
+            logger.warning(
+                "Multiple prefill datasets provided, only the first one will be used"
+            )
+        try:
+            prefill_dataset = DataLoaderFactory.create_loader(prefill_configs[0])
+            prefill_dataset.load(
+                api_type=config.endpoint_config.api_type,
+                model_params=config.model_params,
+            )
+            logger.info(
+                f"Loaded prefill dataset: {prefill_dataset.num_samples()} samples"
+            )
+        except Exception as e:
+            logger.error("Prefill dataset load failed")
+            raise SetupError(f"Failed to load prefill dataset: {e}") from e
+
     # Setup runtime settings using factory method
     rt_settings = RuntimeSettings.from_config(config, dataloader.num_samples())
     target_qps = config.settings.load_pattern.target_qps
@@ -536,6 +559,8 @@ def _run_benchmark(
         total_samples += sum(
             [dataset.num_samples() * dataset.repeats for dataset in accuracy_datasets]
         )
+    if prefill_dataset is not None:
+        total_samples += prefill_dataset.num_samples() * prefill_dataset.repeats
     duration_s = rt_settings.min_duration_ms / 1000
 
     logger.info(
@@ -613,6 +638,7 @@ def _run_benchmark(
                 report_dir=report_dir,
                 tokenizer_override=tokenizer,
                 accuracy_datasets=accuracy_datasets,
+                prefill_dataset=prefill_dataset,
                 max_shutdown_timeout_s=config.timeout
                 if config.timeout
                 else SystemDefaults.DEFAULT_TIMEOUT,

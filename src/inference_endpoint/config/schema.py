@@ -77,6 +77,7 @@ class DatasetType(str, Enum):
 
     PERFORMANCE = "performance"
     ACCURACY = "accuracy"
+    PREFILL = "prefill"
 
 
 class EvalMethod(str, Enum):

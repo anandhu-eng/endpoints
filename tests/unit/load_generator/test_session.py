@@ -154,3 +154,70 @@ def test_session_start(clean_sample_event_hooks):
         assert stats["total_sent"] == 10_000
         assert stats["completed"] == 10_000
         assert stats["in_flight"] == 0
+
+
+def test_session_with_prefill_dataset(clean_sample_event_hooks, tmp_path):
+    """Test that a prefill dataset's samples are issued but excluded from reporting."""
+    n_perf_samples = 200
+    n_prefill_samples = 50
+
+    rt_settings = RuntimeSettings(
+        metrics.Throughput(5000),
+        [metrics.Throughput(5000)],
+        min_duration_ms=0,
+        max_duration_ms=10_000,
+        n_samples_from_dataset=100,
+        n_samples_to_issue=n_perf_samples,
+        min_sample_count=100,
+        rng_sched=random.Random(1234),
+        rng_sample_index=random.Random(1234),
+        load_pattern=LoadPattern(type=LoadPatternType.MAX_THROUGHPUT),
+    )
+
+    def compute_digits_of_square(n: int):
+        yield from str(n**2)
+
+    dl = DummyDataLoader(n_samples=100)
+    prefill_dl = DummyDataLoader(n_samples=n_prefill_samples)
+    sample_issuer = PooledSampleIssuer(compute_digits_of_square)
+    sched = MaxThroughputScheduler(rt_settings, WithoutReplacementSampleOrder)
+
+    report_dir = tmp_path / "report"
+
+    sess = BenchmarkSession.start(
+        rt_settings,
+        dl,
+        sample_issuer,
+        sched,
+        prefill_dataset=prefill_dl,
+        name="pytest_test_session_prefill",
+        report_dir=report_dir,
+        dump_events_log=True,
+    )
+    events_db_path = sess.event_recorder.connection_name
+    sess.wait_for_test_end()
+    sample_issuer.shutdown()
+
+    # The report should only contain performance samples (not prefill)
+    assert sess.report is not None
+    assert sess.report.n_samples_issued == n_perf_samples
+    assert sess.report.n_samples_completed == n_perf_samples
+
+    # Prefill should NOT appear in sample_uuid_map
+    assert sess.sample_uuid_map is not None
+    all_uuids_in_map = set()
+    for mapping in sess.sample_uuid_map.values():
+        all_uuids_in_map.update(mapping.keys())
+    assert len(all_uuids_in_map) == n_perf_samples
+
+    # The raw events DB should contain ALL samples (perf + prefill)
+    assert Path(events_db_path).exists()
+    with MetricsReporter(events_db_path) as reporter:
+        raw_stats = reporter.get_sample_statuses()
+    assert raw_stats["completed"] == n_perf_samples + n_prefill_samples
+
+    # events.jsonl should also contain prefill events (dumped before exclusion)
+    events_jsonl = report_dir / "events.jsonl"
+    assert events_jsonl.exists()
+    events_text = events_jsonl.read_text()
+    assert events_text.count('"loadgen_issue_called"') == n_perf_samples + n_prefill_samples

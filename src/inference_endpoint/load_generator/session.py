@@ -79,6 +79,7 @@ class BenchmarkSession:
         self,
         perf_test_generator: LoadGenerator,
         accuracy_test_generators: dict[str, LoadGenerator] | None = None,
+        prefill_load_generator: LoadGenerator | None = None,
         max_shutdown_timeout_s: float = 300.0,
         report_dir: os.PathLike | None = None,
         tokenizer_override: AutoTokenizer | None = None,
@@ -86,6 +87,14 @@ class BenchmarkSession:
     ):
         with self.event_recorder:
             try:
+                # Issue prefill samples before TEST_STARTED to saturate
+                # connections and reach steady state. Fire-and-forget: we do
+                # NOT wait for completions before proceeding.
+                if prefill_load_generator:
+                    for _ in prefill_load_generator:
+                        pass
+                    self.logger.info("All prefill samples issued")
+
                 EventRecorder.record_event(
                     SessionEvent.TEST_STARTED,
                     time.monotonic_ns(),
@@ -145,6 +154,19 @@ class BenchmarkSession:
 
             # Handle reporting
             with MetricsReporter(self.event_recorder.connection_name) as reporter:
+                # Dump events log FIRST so the full log includes prefill events
+                if report_dir:
+                    Path(report_dir).mkdir(parents=True, exist_ok=True)
+                    if dump_events_log:
+                        reporter.dump_to_json(Path(report_dir) / "events.jsonl")
+
+                # Collect prefill UUIDs to exclude from metrics
+                exclude_uuids: set[str] | None = None
+                if prefill_load_generator:
+                    exclude_uuids = set(
+                        prefill_load_generator.uuid_to_index_map.keys()
+                    )
+
                 has_model = hasattr(self.runtime_settings, "model")
                 tokenizer = None
                 if tokenizer_override is not None:
@@ -161,12 +183,14 @@ class BenchmarkSession:
                                 f"Error loading tokenizer for model {model}: {e}"
                             )
                             tokenizer = None
-                report = reporter.create_report(tokenizer)
+                report = reporter.create_report(
+                    tokenizer, exclude_sample_uuids=exclude_uuids
+                )
 
                 # Store report on session so external callers can use it
                 self.report = report
 
-                # Consolidate UUID->index mappings
+                # Consolidate UUID->index mappings (prefill excluded)
                 perf_name = (
                     perf_test_generator.name
                     if perf_test_generator.name
@@ -183,7 +207,6 @@ class BenchmarkSession:
 
                 # Save to report directory if provided
                 if report_dir:
-                    Path(report_dir).mkdir(parents=True, exist_ok=True)
                     report.to_json(save_to=Path(report_dir) / "result_summary.json")
 
                     # Dump runtime settings to report directory
@@ -217,9 +240,6 @@ class BenchmarkSession:
                     # Save the UUID mapping for output verification
                     with (Path(report_dir) / "sample_idx_map.json").open("w") as f:
                         f.write(orjson.dumps(self.sample_uuid_map).decode("utf-8"))
-
-                    if dump_events_log:
-                        reporter.dump_to_json(Path(report_dir) / "events.jsonl")
 
                 # Display report to console
                 report.display(fn=print, summary_only=True)
@@ -255,6 +275,7 @@ class BenchmarkSession:
         scheduler: Scheduler,
         *args,
         accuracy_datasets: list[Dataset] | None = None,
+        prefill_dataset: Dataset | None = None,
         load_generator_cls: type[LoadGenerator] = SchedulerBasedLoadGenerator,
         name: str | None = None,
         max_shutdown_timeout_s: float = 300.0,
@@ -270,6 +291,10 @@ class BenchmarkSession:
             sample_issuer: The sample issuer to use for the session.
             scheduler: The scheduler to use for the session.
             accuracy_datasets: The datasets to use for the accuracy tests. If None, no accuracy tests will be run.
+            prefill_dataset: Optional dataset for warmup/prefill. If provided, samples are issued before
+                            TEST_STARTED to saturate connections and reach steady state. These samples
+                            are excluded from metrics reporting. Uses the same scheduler configuration
+                            as the performance load generator.
             load_generator_cls: The load generator class to use for the session.
             name: The name of the session.
             max_shutdown_timeout_s: The maximum timeout to wait for the test to complete after all samples have been issued.
@@ -320,11 +345,37 @@ class BenchmarkSession:
                     *args,
                 )
 
+        # Create prefill load generator (uses same scheduler config as perf)
+        prefill_load_generator = None
+        if prefill_dataset:
+            prefill_rt_settings = RuntimeSettings(
+                metric_target=runtime_settings.metric_target,
+                reported_metrics=runtime_settings.reported_metrics,
+                min_duration_ms=0,
+                max_duration_ms=None,  # type: ignore[arg-type]
+                n_samples_from_dataset=prefill_dataset.num_samples(),
+                n_samples_to_issue=prefill_dataset.num_samples() * prefill_dataset.repeats,
+                min_sample_count=prefill_dataset.num_samples() * prefill_dataset.repeats,
+                rng_sched=runtime_settings.rng_sched,
+                rng_sample_index=runtime_settings.rng_sample_index,
+                load_pattern=runtime_settings.load_pattern,
+            )
+            prefill_sched = scheduler.__class__(
+                prefill_rt_settings, WithoutReplacementSampleOrder
+            )
+            prefill_load_generator = load_generator_cls(
+                sample_issuer,
+                prefill_dataset,
+                prefill_sched,  # type: ignore[arg-type]
+                *args,
+            )
+
         session.thread = threading.Thread(
             target=session._run_test,
             args=(load_generator,),
             kwargs={
                 "accuracy_test_generators": accuracy_test_generators,
+                "prefill_load_generator": prefill_load_generator,
                 "max_shutdown_timeout_s": max_shutdown_timeout_s,
                 "report_dir": report_dir,
                 "tokenizer_override": tokenizer_override,
