@@ -30,9 +30,9 @@ from . import presets
 logger = getLogger(__name__)
 
 
-class Shopify(
+class ShopifyProductCatalogue(
     Dataset,
-    dataset_id="shopify",
+    dataset_id="shopify_product_catalogue",
 ):
     """Shopify product catalogue: multimodal benchmark for product taxonomy classification.
 
@@ -146,4 +146,4 @@ class Shopify(
         return df
 
 
-__all__ = ["Shopify"]
+__all__ = ["ShopifyProductCatalogue"]
