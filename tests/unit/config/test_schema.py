@@ -98,6 +98,23 @@ class TestDataset:
         assert dataset.eval_method == EvalMethod.EXACT_MATCH
 
 
+    def test_prefill_dataset(self):
+        """Test prefill dataset config."""
+        dataset = Dataset(
+            name="warmup",
+            type=DatasetType.PREFILL,
+            path="datasets/warmup.pkl",
+            samples=100,
+        )
+        assert dataset.type == DatasetType.PREFILL
+        assert dataset.eval_method is None
+
+    def test_prefill_dataset_from_string(self):
+        """Test that 'prefill' string correctly parses to DatasetType.PREFILL."""
+        dataset = Dataset(name="warmup", type="prefill", path="warmup.pkl")
+        assert dataset.type == DatasetType.PREFILL
+
+
 class TestBenchmarkConfig:
     """Test complete benchmark configuration."""
 

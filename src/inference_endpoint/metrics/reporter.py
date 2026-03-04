@@ -1255,20 +1255,57 @@ class MetricsReporter:
             return result[0]
         return None
 
+    def _apply_uuid_exclusions(self, exclude_sample_uuids: set[str]) -> None:
+        """Create a filtered view of the events table that excludes specified sample UUIDs.
+
+        Uses a duckdb in-memory VIEW named ``events`` to shadow the
+        ``sqlite_db.main.events`` table. After switching the active schema to
+        ``memory.main``, all existing queries transparently operate on the
+        filtered dataset without any SQL modifications.
+
+        Args:
+            exclude_sample_uuids: Set of sample UUIDs to exclude from all subsequent queries.
+
+        Raises:
+            NotImplementedError: If client_type is not 'duckdb'.
+        """
+        if self.client_type != "duckdb":
+            raise NotImplementedError(
+                "Sample UUID exclusion is only supported with the duckdb client"
+            )
+        uuid_list = ", ".join(f"'{u}'" for u in exclude_sample_uuids)
+        self.cur_.execute(
+            f"CREATE OR REPLACE VIEW memory.main.events AS "
+            f"SELECT * FROM sqlite_db.main.events "
+            f"WHERE sample_uuid NOT IN ({uuid_list})"
+        )
+        self.cur_.execute("USE memory.main")
+        logging.debug(
+            f"Applied UUID exclusions: {len(exclude_sample_uuids)} sample(s) "
+            "excluded via memory.main.events view"
+        )
+
     def create_report(
         self,
         tokenizer: Tokenizer | None = None,
         tpot_reporting_mode: TPOTReportingMode = TPOTReportingMode.REQUEST_WEIGHTED,
+        exclude_sample_uuids: set[str] | None = None,
     ) -> Report:
         """Creates a Report object from the metrics.
 
         Args:
             tokenizer: A Tokenizer object from HuggingFace. If provided, output sequence lengths will be calculated.
             tpot_reporting_mode: TPOT reporting mode (REQUEST_WEIGHTED or TOKEN_WEIGHTED). (Default: REQUEST_WEIGHTED)
+            exclude_sample_uuids: If provided, all events associated with these sample UUIDs will be
+                                  excluded from metric calculations. The underlying events database is
+                                  not modified; a filtered duckdb VIEW is used instead.
 
         Returns:
             Report: A Report object containing the metrics.
         """
+        if exclude_sample_uuids:
+            self._apply_uuid_exclusions(exclude_sample_uuids)
+
         test_started_at = self.get_test_started_at()
         if test_started_at is None:
             raise RuntimeError("TEST_STARTED event not found in database")
