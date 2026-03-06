@@ -395,6 +395,7 @@ class BenchmarkConfig(BaseModel):
     #   - True = auto (compute optimal NUMA-aware plan)
     #   - False = disabled (no CPU pinning)
     enable_cpu_affinity: bool = True
+    retain_events_db: bool = False
 
     @classmethod
     def from_yaml_file(cls, path: Path) -> BenchmarkConfig:

@@ -643,6 +643,7 @@ def _run_benchmark(
                 if config.timeout
                 else SystemDefaults.DEFAULT_TIMEOUT,
                 dump_events_log=True,
+                retain_events_db=config.retain_events_db,
             )
 
             # Wait for test end with ability to interrupt

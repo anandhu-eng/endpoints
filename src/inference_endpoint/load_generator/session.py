@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import threading
 import time
 import uuid
@@ -84,6 +85,7 @@ class BenchmarkSession:
         report_dir: os.PathLike | None = None,
         tokenizer_override: AutoTokenizer | None = None,
         dump_events_log: bool = False,
+        retain_events_db: bool = False,
     ):
         with self.event_recorder:
             try:
@@ -159,13 +161,15 @@ class BenchmarkSession:
                     Path(report_dir).mkdir(parents=True, exist_ok=True)
                     if dump_events_log:
                         reporter.dump_to_json(Path(report_dir) / "events.jsonl")
+                    if retain_events_db:
+                        dest = Path(report_dir) / "events.db"
+                        shutil.copy2(self.event_recorder.connection_name, dest)
+                        logger.info(f"Retained events db at {dest}")
 
                 # Collect prefill UUIDs to exclude from metrics
                 exclude_uuids: set[str] | None = None
                 if prefill_load_generator:
-                    exclude_uuids = set(
-                        prefill_load_generator.uuid_to_index_map.keys()
-                    )
+                    exclude_uuids = set(prefill_load_generator.uuid_to_index_map.keys())
 
                 has_model = hasattr(self.runtime_settings, "model")
                 tokenizer = None
@@ -282,6 +286,7 @@ class BenchmarkSession:
         report_dir: os.PathLike | None = None,
         tokenizer_override: AutoTokenizer | None = None,
         dump_events_log: bool = False,
+        retain_events_db: bool = False,
     ) -> BenchmarkSession:
         """Start a new BenchmarkSession in a thread.
 
@@ -304,6 +309,7 @@ class BenchmarkSession:
                                 based on the model name in the runtime settings.
             dump_events_csv: Whether to dump the events to a CSV file. Only use for debugging
                              purposes, as the events database can get quite large.
+            retain_events_db: Whether to copy the events SQLite database to report_dir before cleanup.
 
         Returns:
             The new BenchmarkSession.
@@ -354,8 +360,10 @@ class BenchmarkSession:
                 min_duration_ms=0,
                 max_duration_ms=None,  # type: ignore[arg-type]
                 n_samples_from_dataset=prefill_dataset.num_samples(),
-                n_samples_to_issue=prefill_dataset.num_samples() * prefill_dataset.repeats,
-                min_sample_count=prefill_dataset.num_samples() * prefill_dataset.repeats,
+                n_samples_to_issue=prefill_dataset.num_samples()
+                * prefill_dataset.repeats,
+                min_sample_count=prefill_dataset.num_samples()
+                * prefill_dataset.repeats,
                 rng_sched=runtime_settings.rng_sched,
                 rng_sample_index=runtime_settings.rng_sample_index,
                 load_pattern=runtime_settings.load_pattern,
@@ -380,6 +388,7 @@ class BenchmarkSession:
                 "report_dir": report_dir,
                 "tokenizer_override": tokenizer_override,
                 "dump_events_log": dump_events_log,
+                "retain_events_db": retain_events_db,
             },
         )
         session.thread.start()
