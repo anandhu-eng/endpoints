@@ -24,5 +24,11 @@ Use Python for both server and client:
 - Make sure we are in the venv environment. If not: 'source ./venv/bin/activate'
 - Always make sure the server is not running at the start by doing 'pkill -f echo_server'
 - Server: `python -m inference_endpoint.testing.echo_server --port 8765  &`
-- Client: 'inference-endpoint --verbose benchmark offline --endpoint http://localhost:8765 --model Qwen/Qwen3-8B --dataset tests/datasets/dummy_1k.pkl --db-backend postgres --db-connection-string "postgresql://postgres.lczeskqdhwkfdgbgttqr:wGodMlFrBJz1HGm7@aws-1-us-east-2.pooler.supabase.com:6543/postgres"'
+- Client: 'inference-endpoint --verbose benchmark offline --endpoint http://localhost:8765 --model meta-llama/Llama-3.1-8B-Instruct --dataset tests/datasets/dummy_1k.pkl --db-backend postgres --db-connection-string postgresql://neondb_owner:npg_GywCD8TukWI9@ep-withered-grass-akhya6bx.c-3.us-west-2.aws.neon.tech/neondb?sslmode=require'
+
+# - Client: 'inference-endpoint --verbose benchmark offline --endpoint http://localhost:8765 --model Qwen/Qwen3-8B --dataset tests/# datasets/dummy_1k.pkl --db-backend postgres --db-connection-string "postgresql://postgres.#
+
+# lczeskqdhwkfdgbgttqr:wGodMlFrBJz1HGm7@aws-1-us-east-2.pooler.supabase.com:6543/postgres"'
+
 - Always kill the server process after the test
+- The whole run should be done in 40secs. If not something is wrong.
