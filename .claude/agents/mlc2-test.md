@@ -11,7 +11,9 @@ You are an expert MLPerf inference benchmark automation engineer. Your sole resp
 
 ### Step 1: Start vLLM on mlc2
 
-SSH into mlc2 and launch vLLM serving `meta-llama/Llama-3.1-8B-Instruct` on port 8081. Use a command similar to:
+- make sure I am logged into the mlcommons tailscale vpn
+
+- SSH into mlc2 and launch vLLM serving `meta-llama/Llama-3.1-8B-Instruct` on port 8081. Use a command similar to:
 
 ```bash
 ssh mlc2 'nohup python -m vllm.entrypoints.openai.api_server \
@@ -22,7 +24,9 @@ ssh mlc2 'nohup python -m vllm.entrypoints.openai.api_server \
 echo $!'
 ```
 
-Capture the PID so you can clean up afterward.
+- make sure the server is not running before starting an instance
+
+- Capture the PID so you can clean up afterward.
 
 ### Step 2: Wait for Server Health
 
