@@ -97,7 +97,7 @@ class SQLWriter(RecordWriter):
         )
         self._session = self._session_factory()
 
-    def write(self, record: EventRecord) -> None:
+    def _write_record(self, record: EventRecord) -> None:
         if self._session is None:
             return
         row = _record_to_row(record)

@@ -290,11 +290,7 @@ class TestWorkerErrorHandling:
                 assert isinstance(response, QueryResult)
                 assert response.id == query_id
                 assert response.error is not None
-                error_str = (
-                    f"{response.error.error_type}: {response.error.error_message}"
-                    if response.error.error_message
-                    else response.error.error_type
-                )
+                error_str = str(response.error)
                 error_lower = error_str.lower()
                 assert (
                     ("connect" in error_lower and "failed" in error_lower)
@@ -365,12 +361,7 @@ class TestWorkerErrorHandling:
                 assert isinstance(response, QueryResult)
                 assert response.id == query_id
                 assert response.error is not None
-                err = response.error
-                err_str = (
-                    f"{err.error_type}: {err.error_message}"
-                    if err.error_message
-                    else err.error_type
-                )
+                err_str = str(response.error)
                 assert error_msg in err_str
                 assert response.response_output is None
 
@@ -471,12 +462,7 @@ class TestWorkerErrorHandling:
                 else:
                     # Non-streaming: malformed JSON causes a decode error
                     assert response.error is not None
-                    err = response.error
-                    err_lower = (
-                        f"{err.error_type}: {err.error_message}".lower()
-                        if err.error_message
-                        else err.error_type.lower()
-                    )
+                    err_lower = str(response.error).lower()
                     assert "decode" in err_lower or "json" in err_lower
 
             finally:

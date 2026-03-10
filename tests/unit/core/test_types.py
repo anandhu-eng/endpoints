@@ -33,6 +33,20 @@ from inference_endpoint.core.types import (
 )
 
 
+class TestErrorData:
+    """Test ErrorData string representation."""
+
+    def test_error_data_str_with_message(self):
+        """str(ErrorData) is 'type: message' when error_message is non-empty."""
+        err = ErrorData(error_type="ValueError", error_message="invalid value")
+        assert str(err) == "ValueError: invalid value"
+
+    def test_error_data_str_without_message(self):
+        """str(ErrorData) is error_type only when error_message is empty."""
+        err = ErrorData(error_type="TimeoutError", error_message="")
+        assert str(err) == "TimeoutError"
+
+
 class TestQuerySerialization:
     """Test Query msgspec.msgpack serialization with various field combinations."""
 

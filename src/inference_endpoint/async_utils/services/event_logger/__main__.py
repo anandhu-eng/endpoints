@@ -35,8 +35,9 @@ from inference_endpoint.core.record import (
     SessionEventType,
 )
 
+from .file_writer import JSONLWriter
 from .sql_writer import SQLWriter
-from .writer import JSONLWriter, RecordWriter
+from .writer import RecordWriter
 
 # CLI writer names to writer classes (for --writers flag)
 _WRITER_REGISTRY: dict[str, type[RecordWriter]] = {
@@ -88,9 +89,9 @@ class EventLoggerService(ZmqEventRecordSubscriber):
             )
 
     def _write_record_to_writers(self, record: EventRecord) -> None:
-        """Write a single record to all writers (uses write_record for flush-on-interval)."""
+        """Write a single record to all writers (uses write for flush-on-interval)."""
         for writer in self.writers:
-            writer.write_record(record)
+            writer.write(record)
 
     def _close_writers_and_stop(self) -> None:
         """Flush and close all writers, clear the list, then request loop stop."""

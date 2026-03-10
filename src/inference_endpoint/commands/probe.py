@@ -175,13 +175,7 @@ async def run_probe_command(args: argparse.Namespace) -> None:
                         response_output = ""
 
                     if result.error:
-                        err = result.error
-                        err_str = (
-                            f"{err.error_type}: {err.error_message}"
-                            if err.error_message
-                            else err.error_type
-                        )
-                        errors.append(f"{query_id}: {err_str}")
+                        errors.append(f"{query_id}: {result.error}")
                     else:
                         latencies.append(latency_ms)
                         responses.append(

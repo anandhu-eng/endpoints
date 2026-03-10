@@ -13,20 +13,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Writer base class and file-based implementations for event records."""
+"""Writer base class for event records."""
 
 from abc import ABC, abstractmethod
-from pathlib import Path
 
-import msgspec
-from inference_endpoint.core.record import EventRecord, EventType
+from inference_endpoint.core.record import EventRecord
 
 
 class RecordWriter(ABC):
     """Abstract base class for writing event records.
 
     Supports an optional flush interval: after every N records written via
-    write_record(), the writer is automatically flushed.
+    write(), the writer is automatically flushed.
     """
 
     def __init__(self, *args, flush_interval: int | None = None):
@@ -39,9 +37,9 @@ class RecordWriter(ABC):
         self._flush_interval = flush_interval
         self._n_since_last_flush = 0
 
-    def write_record(self, record: EventRecord) -> None:
+    def write(self, record: EventRecord) -> None:
         """Write a record and optionally flush based on flush_interval."""
-        self.write(record)
+        self._write_record(record)
         self._n_since_last_flush += 1
         if (
             self._flush_interval is not None
@@ -50,8 +48,8 @@ class RecordWriter(ABC):
             self.flush()
 
     @abstractmethod
-    def write(self, record: EventRecord) -> None:
-        """Write an event record."""
+    def _write_record(self, record: EventRecord) -> None:
+        """Write an event record. Subclasses must implement this method."""
         raise NotImplementedError("Subclasses must implement this method.")
 
     @abstractmethod
@@ -66,58 +64,3 @@ class RecordWriter(ABC):
         another N records (whether flush was triggered by the interval or manually).
         """
         self._n_since_last_flush = 0
-
-
-class FileWriter(RecordWriter):
-    """Writer for writing event records to a file."""
-
-    def __init__(
-        self,
-        file_path: Path,
-        mode: str = "w",
-        flush_interval: int | None = None,
-        **kwargs: object,
-    ):
-        super().__init__(flush_interval=flush_interval)
-        self.file_path = Path(file_path)
-        # No idea what the 'IO' type MyPy thinks this is, apparently even io.IOBase does not work, so just ignore.
-        self.file_obj = self.file_path.open(mode=mode)  # type: ignore[assignment]
-
-    def close(self) -> None:
-        if self.file_obj is not None:
-            try:
-                self.flush()
-                self.file_obj.close()
-            except (OSError, FileNotFoundError):
-                # File may already be closed or I/O error on close (e.g. disk full).
-                pass
-            finally:
-                self.file_obj = None  # type: ignore[assignment]
-
-    def record_to_line(self, record: EventRecord) -> str:
-        """Convert an event record to a line of text."""
-        raise NotImplementedError("Subclasses must implement this method.")
-
-    def write(self, record: EventRecord) -> None:
-        if self.file_obj is not None:
-            self.file_obj.write(self.record_to_line(record) + "\n")
-
-    def flush(self) -> None:
-        if self.file_obj is not None:
-            self.file_obj.flush()
-        super().flush()
-
-
-class JSONLWriter(FileWriter):
-    """Writes to a JSONL file."""
-
-    extension = ".jsonl"
-
-    def __init__(self, file_path: Path, *args, **kwargs):
-        super().__init__(file_path.with_suffix(self.extension), *args, **kwargs)
-
-        # EventRecords are msgspec structs so we can use the built-in JSON encoder
-        self.encoder = msgspec.json.Encoder(enc_hook=EventType.encode_hook)
-
-    def record_to_line(self, record: EventRecord) -> str:
-        return self.encoder.encode(record).decode("utf-8")

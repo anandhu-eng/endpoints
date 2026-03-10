@@ -180,12 +180,7 @@ class _SampleEventHandler:
 
         # Even if there is an error, we still record the event to count the sample as complete
         if result.error is not None:
-            err = result.error
-            err_str = (
-                f"{err.error_type}: {err.error_message}"
-                if err.error_message
-                else err.error_type
-            )
+            err_str = str(result.error)
             logger.error(f"Error in request {result.id}: {err_str}")
 
             record_exception(err_str, result.id)

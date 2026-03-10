@@ -52,7 +52,14 @@ OUTPUT_ELEM_TYPE = str | tuple[str, ...]
 """Type for a single output or reasoning value: string (non-streaming) or tuple of strings (streaming)."""
 
 
-class TextModelOutput(msgspec.Struct, tag=True, kw_only=True):  # type: ignore[call-arg]
+class TextModelOutput(
+    msgspec.Struct,
+    tag=True,
+    kw_only=True,
+    frozen=True,
+    omit_defaults=True,
+    array_like=True,
+):  # type: ignore[call-arg]
     """Structured output from a text model.
 
     Supports main output and optional reasoning (e.g. chain-of-thought).
@@ -95,7 +102,14 @@ class TextModelOutput(msgspec.Struct, tag=True, kw_only=True):  # type: ignore[c
 OUTPUT_TYPE = str | TextModelOutput
 
 
-class ErrorData(msgspec.Struct, tag=True, kw_only=True):  # type: ignore[call-arg]
+class ErrorData(
+    msgspec.Struct,
+    tag=True,
+    kw_only=True,
+    frozen=True,
+    omit_defaults=True,
+    array_like=True,
+):  # type: ignore[call-arg]
     """Structured error information.
 
     Attributes:
@@ -105,6 +119,14 @@ class ErrorData(msgspec.Struct, tag=True, kw_only=True):  # type: ignore[call-ar
 
     error_type: str
     error_message: str = ""
+
+    def __str__(self) -> str:
+        """Human-readable string: 'type: message' if message present, else 'type'."""
+        return (
+            f"{self.error_type}: {self.error_message}"
+            if self.error_message
+            else self.error_type
+        )
 
 
 class Query(
