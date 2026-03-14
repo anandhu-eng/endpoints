@@ -388,7 +388,7 @@ class TestAggregatorE2E:
                     if len(lines) >= 2:
                         break
                 except FileNotFoundError:
-                    pass
+                    pass  # File not yet created by the emitter; retry.
                 await asyncio.sleep(0.1)
 
             content = (tmp_path / "metrics.jsonl").read_text()

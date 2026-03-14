@@ -64,7 +64,8 @@ class StubAggregator(MetricsAggregatorService):
     """Bypass ZMQ init for unit testing — only process() logic is tested."""
 
     def __init__(self, emitter: MetricEmitter, tokenize_pool=None):
-        # Skip ZmqEventRecordSubscriber.__init__ entirely.
+        # Intentionally skip super().__init__() to avoid ZMQ socket creation.
+        # All required attributes are set manually below.
         self._emitter = emitter
         self._tokenize_pool = tokenize_pool
         self._table = MetricsTable()

@@ -81,7 +81,8 @@ class StubEventLoggerService(EventLoggerService):
         writers: list[RecordWriter],
         shutdown_event: asyncio.Event | None = None,
     ):
-        # Skip ZmqEventRecordSubscriber.__init__ entirely.
+        # Intentionally skip super().__init__() to avoid ZMQ socket creation.
+        # All required attributes are set manually below.
         self._shutdown_received = False
         self._shutdown_event = shutdown_event
         self.writers: list[RecordWriter] = writers

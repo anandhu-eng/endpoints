@@ -124,6 +124,7 @@ class EventLoggerService(ZmqEventRecordSubscriber):
 
     def close(self) -> None:
         for writer in self.writers:
+            writer.flush()
             writer.close()
         self.writers.clear()
         super().close()

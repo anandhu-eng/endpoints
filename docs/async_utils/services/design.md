@@ -88,9 +88,10 @@ flowchart TB
 
 ## 3. De-sync issues between subscribers and how to handle them
 
-### 3.1 No guaranteed ordering across subscribers
+### 3.1 Ordering guarantees
 
-- Each subscriber receives messages in **publish order** on its own socket. Different subscribers may progress at different rates (e.g. one does I/O, one is CPU-bound). So **relative order between subscribers is not defined**; there is no global “event clock” that all subscribers share.
+- Each subscriber receives messages in **publish order** on its own socket. Since there is a single publisher with monotonic timestamps, each subscriber sees a consistently ordered stream.
+- However, different subscribers may **progress at different rates** (e.g. one does I/O, one is CPU-bound). At any point in time, subscriber A may have processed events up to `t=500` while subscriber B is still at `t=200`. There is no mechanism for subscribers to synchronize their progress with each other.
 - If a downstream system needs a single ordered log, that should be produced by **one** subscriber (e.g. event_logger) that writes to a single file or DB.
 
 ### 3.2 Late-joining subscribers
@@ -120,7 +121,7 @@ flowchart TB
 
 ### 4.1 EventRecord and encoding
 
-- **EventRecord** (in `core.record`): `event_type` (an `EventType`), `timestamp_ns`, `sample_uuid`, `data` (optional; type `OUTPUT_TYPE | ErrorData | None`). Event types are grouped by category (e.g. `session`, `error`, `sample`); each member has a **topic** string `category.value` (e.g. `session.started`, `sample.complete`).
+- **EventRecord** (in `core.record`) consists of: `event_type` (an `EventType`), `timestamp_ns`, `sample_uuid`, and `data` (optional; type `OUTPUT_TYPE | ErrorData | None`). Event types are grouped by category (e.g. `session`, `error`, `sample`); each member has a **topic** string `category.value` (e.g. `session.started`, `sample.complete`).
 - **Encoding**: `encode_event_record(record)` returns `(topic_bytes_padded, payload_bytes)`. Topic is padded to **TOPIC_FRAME_SIZE** (40 bytes) for fixed-size prefix. Payload is msgpack-encoded `EventRecord` (with custom enc/dec hooks so `event_type` is stored as the topic string). The ZMQ layer sends **one frame** = `topic_bytes_padded + payload_bytes`.
 
 ### 4.2 Topics and filtering

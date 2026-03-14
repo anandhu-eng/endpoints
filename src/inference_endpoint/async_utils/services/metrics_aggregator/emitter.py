@@ -86,6 +86,7 @@ class JsonlMetricEmitter(MetricEmitter):
                 self.flush()
                 self._file.close()
             except (OSError, FileNotFoundError):
+                # File may already be closed or I/O error on close (e.g. disk full).
                 pass
             finally:
                 self._file = None  # type: ignore[assignment]
