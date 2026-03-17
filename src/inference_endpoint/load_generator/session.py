@@ -108,8 +108,14 @@ class BenchmarkSession:
                                 "Warmup drain timeout exceeded, proceeding to performance test"
                             )
                             break
+                        if self.stop_requested:
+                            self.logger.info(
+                                f"Early stop requested (pending={self.event_recorder.n_inflight_samples}), shutting down test..."
+                            )
+                            break
                         time.sleep(0.1)
-                    self.logger.info("Warmup complete")
+
+                    self.logger.info("Warmup issue complete")
 
                 EventRecorder.record_event(
                     SessionEvent.TEST_STARTED,
@@ -299,6 +305,8 @@ class BenchmarkSession:
             dataset: The dataset to use for the performance test.
             sample_issuer: The sample issuer to use for the session.
             scheduler: The scheduler to use for the session.
+            *args: Additional arguments to pass to the load generator constructor.
+            warmup_dataset: The dataset to use for the warmup test. If None, no warmup test will be run.
             accuracy_datasets: The datasets to use for the accuracy tests. If None, no accuracy tests will be run.
             load_generator_cls: The load generator class to use for the session.
             name: The name of the session.
@@ -339,8 +347,8 @@ class BenchmarkSession:
             warmup_generator = load_generator_cls(
                 sample_issuer,
                 warmup_dataset,
-                warmup_sched, # type: ignore[arg-type]
-                *args,  
+                warmup_sched,  # type: ignore[arg-type]
+                *args,
             )
 
         # Create accuracy test generators

@@ -63,6 +63,7 @@ from inference_endpoint.config.yaml_loader import ConfigError, ConfigLoader
 from inference_endpoint.core.types import QueryResult
 from inference_endpoint.dataset_manager.dataset import Dataset
 from inference_endpoint.dataset_manager.factory import DataLoaderFactory
+from inference_endpoint.dataset_manager.predefined.random import RandomDataset
 from inference_endpoint.endpoint_client.config import HTTPClientConfig
 from inference_endpoint.endpoint_client.cpu_affinity import pin_loadgen
 from inference_endpoint.endpoint_client.http_client import HTTPEndpointClient
@@ -458,7 +459,6 @@ def _run_benchmark(
             raise InputValidationError(
                 "A tokenizer is required to generate the warmup dataset. Ensure model_params.name is set."
             )
-        from inference_endpoint.dataset_manager.predefined.random import RandomDataset
 
         warmup_cfg = config.warmup
         try:
@@ -574,6 +574,9 @@ def _run_benchmark(
         total_samples += sum(
             [dataset.num_samples() * dataset.repeats for dataset in accuracy_datasets]
         )
+    if warmup_dataset is not None:
+        total_samples += warmup_dataset.num_samples()
+
     duration_s = rt_settings.min_duration_ms / 1000
 
     logger.info(

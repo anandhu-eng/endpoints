@@ -43,6 +43,52 @@ def test_error_counting(events_db):
         assert reporter.get_error_count() == 1
 
 
+@pytest.mark.unit
+def test_error_counting_excludes_warmup_errors(tmp_path, sample_uuids):
+    test_db = str(tmp_path / "test_error_counting_excludes_warmup_errors.db")
+    warmup_uuid = sample_uuids(1)
+    perf_error_uuid = sample_uuids(2)
+    perf_success_uuid = sample_uuids(3)
+
+    with sqlite3_cursor(test_db) as (cursor, conn):
+        cursor.execute(
+            "CREATE TABLE IF NOT EXISTS events (sample_uuid VARCHAR(32), event_type VARCHAR(32), timestamp_ns INTEGER, data BLOB)"
+        )
+        cursor.executemany(
+            "INSERT INTO events (sample_uuid, event_type, timestamp_ns, data) VALUES (?, ?, ?, ?)",
+            [
+                (
+                    warmup_uuid,
+                    SessionEvent.LOADGEN_ISSUE_CALLED.value,
+                    1000,
+                    b"",
+                ),
+                (warmup_uuid, SessionEvent.ERROR.value, 1010, b"warmup failed"),
+                ("", SessionEvent.TEST_STARTED.value, 5000, b""),
+                (
+                    perf_error_uuid,
+                    SessionEvent.LOADGEN_ISSUE_CALLED.value,
+                    6000,
+                    b"",
+                ),
+                (perf_error_uuid, SessionEvent.ERROR.value, 6010, b"perf failed"),
+                (
+                    perf_success_uuid,
+                    SessionEvent.LOADGEN_ISSUE_CALLED.value,
+                    7000,
+                    b"",
+                ),
+                (perf_success_uuid, SampleEvent.COMPLETE.value, 7010, b""),
+                ("", SessionEvent.STOP_PERFORMANCE_TRACKING.value, 8000, b""),
+                ("", SessionEvent.TEST_ENDED.value, 9000, b""),
+            ],
+        )
+        conn.commit()
+
+    with MetricsReporter(test_db) as reporter:
+        assert reporter.get_error_count() == 1
+
+
 def test_derive_ttft(events_db, sample_uuids):
     uuid1 = sample_uuids(1)
     uuid2 = sample_uuids(2)

@@ -826,6 +826,7 @@ class MetricsReporter:
 
         # Check if STOP_PERFORMANCE_TRACKING event exists
         stop_ts = self.stop_performance_tracking_timestamp_ns
+        start_ts = self.test_started_timestamp_ns
 
         if stop_ts != float("inf"):
             # Build list of sample_uuids with LOADGEN_ISSUE_CALLED before stop_ts
@@ -838,6 +839,7 @@ class MetricsReporter:
                 FROM events
                 WHERE event_type = '{SessionEvent.LOADGEN_ISSUE_CALLED.value}'
                 AND timestamp_ns < {stop_ts}
+                AND timestamp_ns >= {start_ts}
             )
             AND event_type = '{SampleEvent.COMPLETE.value}'
             """).fetchone()
@@ -863,6 +865,7 @@ class MetricsReporter:
                 SELECT COUNT(*) AS n_ends, MAX(timestamp_ns) AS end_ts
                 FROM events
                 WHERE event_type = '{SessionEvent.TEST_ENDED.value}'
+                AND timestamp_ns >= {start_ts}
                 """).fetchone()
 
                 n_test_ended = test_ended_result[0]
@@ -974,17 +977,22 @@ class MetricsReporter:
         Returns:
             int: The number of distinct failed sample UUIDs.
         """
+        start_ts = self.test_started_timestamp_ns
         stop_ts = self.stop_performance_tracking_timestamp_ns
 
-        where_clause = ""
+        where_clause = f"""
+        AND sample_uuid IN (
+            SELECT DISTINCT sample_uuid FROM events
+            WHERE event_type = '{SessionEvent.LOADGEN_ISSUE_CALLED.value}'
+            AND timestamp_ns >= {start_ts}
+        """
         if stop_ts != float("inf"):
-            where_clause = f"""
-            AND sample_uuid IN (
-                SELECT DISTINCT sample_uuid FROM events
-                WHERE event_type = '{SessionEvent.LOADGEN_ISSUE_CALLED.value}'
+            where_clause += f"""
                 AND timestamp_ns < {stop_ts}
-            )
             """
+        where_clause += """
+        )
+        """
 
         return self.cur_.execute(f"""
         SELECT

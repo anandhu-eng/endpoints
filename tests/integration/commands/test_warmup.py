@@ -103,7 +103,7 @@ async def test_warmup_offline_with_echo_server(
 
     log_text = caplog.text
     assert "Warmup: issuing samples" in log_text, "Warmup did not start"
-    assert "Warmup complete" in log_text, "Warmup did not complete"
+    assert "Warmup issue complete" in log_text, "Warmup issue did not complete"
     assert "Estimated QPS:" in log_text, "Performance test did not run after warmup"
 
 
@@ -179,5 +179,5 @@ async def test_warmup_online_with_echo_server(
 
     log_text = caplog.text
     assert "Warmup: issuing samples" in log_text, "Warmup did not start"
-    assert "Warmup complete" in log_text, "Warmup did not complete"
+    assert "Warmup issue complete" in log_text, "Warmup issue did not complete"
     assert "Estimated QPS:" in log_text, "Performance test did not run after warmup"
