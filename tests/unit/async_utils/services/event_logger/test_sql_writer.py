@@ -47,32 +47,38 @@ def _record(event_type, uuid="", ts=0, data=None):
 
 @pytest.mark.unit
 class TestRecordToRow:
-    def test_sample_event_topic(self):
-        row = _record_to_row(_record(SampleEventType.ISSUED, uuid="s1", ts=1000))
-        assert row.event_type == "sample.issued"
-        assert row.sample_uuid == "s1"
-        assert row.timestamp_ns == 1000
+    @pytest.mark.parametrize(
+        "case_desc, event_type, uuid, ts, expected_topic",
+        [
+            ("sample event", SampleEventType.ISSUED, "s1", 1000, "sample.issued"),
+            ("session event", SessionEventType.ENDED, "", 42, "session.ended"),
+            ("error event", ErrorEventType.GENERIC, "", 99, "error.generic"),
+        ],
+    )
+    def test_topic_and_fields(self, case_desc, event_type, uuid, ts, expected_topic):
+        row = _record_to_row(_record(event_type, uuid=uuid, ts=ts))
+        assert row.event_type == expected_topic
+        assert row.sample_uuid == uuid
+        assert row.timestamp_ns == ts
 
-    def test_session_event_topic(self):
-        row = _record_to_row(_record(SessionEventType.ENDED, ts=42))
-        assert row.event_type == "session.ended"
-        assert row.sample_uuid == ""
-        assert row.timestamp_ns == 42
-
-    def test_error_event_topic(self):
-        row = _record_to_row(_record(ErrorEventType.GENERIC, ts=99))
-        assert row.event_type == "error.generic"
-
-    def test_data_is_json_encoded(self):
-        err = ErrorData(error_type="TestError", error_message="boom")
-        row = _record_to_row(_record(SampleEventType.COMPLETE, data=err))
+    @pytest.mark.parametrize(
+        "case_desc, data, check_str",
+        [
+            (
+                "error data",
+                ErrorData(error_type="TestError", error_message="boom"),
+                "TestError",
+            ),
+            ("none data", None, None),
+        ],
+    )
+    def test_data_encoding(self, case_desc, data, check_str):
+        row = _record_to_row(_record(SampleEventType.COMPLETE, data=data))
         decoded = msgspec.json.decode(row.data)
-        assert "TestError" in str(decoded)
-
-    def test_none_data_encodes_to_null(self):
-        row = _record_to_row(_record(SampleEventType.ISSUED))
-        decoded = msgspec.json.decode(row.data)
-        assert decoded is None
+        if check_str is not None:
+            assert check_str in str(decoded)
+        else:
+            assert decoded is None
 
 
 # ---------------------------------------------------------------------------

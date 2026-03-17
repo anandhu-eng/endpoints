@@ -181,7 +181,7 @@ class TestEventPublisherService:
         assert p1 is event_publisher_service
 
     @pytest.mark.asyncio
-    async def test_publish_session_event_received_by_subscriber(
+    async def test_publish_session_event_to_sub(
         self, event_publisher_service, collecting_subscriber
     ):
         """Publishing a session event is received by the collecting subscriber."""
@@ -200,7 +200,7 @@ class TestEventPublisherService:
         assert rec.data is None
 
     @pytest.mark.asyncio
-    async def test_publish_sample_event_received_by_subscriber(
+    async def test_publish_sample_event_to_sub(
         self, event_publisher_service, collecting_subscriber
     ):
         """Publishing a sample event is received by the collecting subscriber."""

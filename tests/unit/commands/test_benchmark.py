@@ -254,7 +254,7 @@ endpoint_config:
             await run_benchmark_command(args)
 
     @pytest.mark.asyncio
-    async def test_concurrency_pattern_requires_concurrency(self):
+    async def test_concurrency_requires_target(self):
         """Test that concurrency load pattern requires --concurrency."""
         args = _create_mock_args(
             benchmark_mode="online",

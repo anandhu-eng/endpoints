@@ -39,53 +39,47 @@ class TestSampleRow:
         row = SampleRow("s1")
         assert isinstance(row, msgspec.Struct)
 
-    def test_ttft(self):
+    @pytest.mark.parametrize(
+        "case_desc, issued, recv_first, expected",
+        [
+            ("both set", 1000, 2500, 1500),
+            ("no issued", None, 2500, None),
+            ("no recv_first", 1000, None, None),
+        ],
+    )
+    def test_ttft(self, case_desc, issued, recv_first, expected):
         row = SampleRow("s1")
-        row.issued_ns = 1000
-        row.recv_first_ns = 2500
-        assert row.ttft_ns() == 1500
+        row.issued_ns = issued
+        row.recv_first_ns = recv_first
+        assert row.ttft_ns() == expected
 
-    def test_ttft_returns_none_without_issued(self):
+    @pytest.mark.parametrize(
+        "case_desc, issued, complete, expected",
+        [
+            ("both set", 1000, 5000, 4000),
+            ("no issued", None, 5000, None),
+            ("no complete", 1000, None, None),
+        ],
+    )
+    def test_sample_latency(self, case_desc, issued, complete, expected):
         row = SampleRow("s1")
-        row.recv_first_ns = 2500
-        assert row.ttft_ns() is None
+        row.issued_ns = issued
+        row.complete_ns = complete
+        assert row.sample_latency_ns() == expected
 
-    def test_ttft_returns_none_without_recv_first(self):
+    @pytest.mark.parametrize(
+        "case_desc, send, resp_done, expected",
+        [
+            ("both set", 100, 600, 500),
+            ("no send", None, 600, None),
+            ("no resp_done", 100, None, None),
+        ],
+    )
+    def test_request_duration(self, case_desc, send, resp_done, expected):
         row = SampleRow("s1")
-        row.issued_ns = 1000
-        assert row.ttft_ns() is None
-
-    def test_sample_latency(self):
-        row = SampleRow("s1")
-        row.issued_ns = 1000
-        row.complete_ns = 5000
-        assert row.sample_latency_ns() == 4000
-
-    def test_sample_latency_returns_none_without_issued(self):
-        row = SampleRow("s1")
-        row.complete_ns = 5000
-        assert row.sample_latency_ns() is None
-
-    def test_sample_latency_returns_none_without_complete(self):
-        row = SampleRow("s1")
-        row.issued_ns = 1000
-        assert row.sample_latency_ns() is None
-
-    def test_request_duration(self):
-        row = SampleRow("s1")
-        row.client_send_ns = 100
-        row.client_resp_done_ns = 600
-        assert row.request_duration_ns() == 500
-
-    def test_request_duration_returns_none_without_send(self):
-        row = SampleRow("s1")
-        row.client_resp_done_ns = 600
-        assert row.request_duration_ns() is None
-
-    def test_request_duration_returns_none_without_resp_done(self):
-        row = SampleRow("s1")
-        row.client_send_ns = 100
-        assert row.request_duration_ns() is None
+        row.client_send_ns = send
+        row.client_resp_done_ns = resp_done
+        assert row.request_duration_ns() == expected
 
     def test_output_text_empty(self):
         row = SampleRow("s1")

@@ -270,7 +270,7 @@ class TestTimingMetrics:
         assert m["chunk_delta_ns"] == 1000
 
     @pytest.mark.asyncio
-    async def test_chunk_delta_not_emitted_without_last_recv(self):
+    async def test_chunk_delta_needs_last_recv(self):
         """RECV_NON_FIRST without prior RECV_FIRST: no chunk_delta emitted."""
         emitter = FakeEmitter()
         agg = StubAggregator(emitter)
@@ -285,7 +285,7 @@ class TestTimingMetrics:
         assert row.last_recv_ns is None  # No recv events yet
 
     @pytest.mark.asyncio
-    async def test_request_duration_not_emitted_without_client_send(self):
+    async def test_req_duration_needs_client_send(self):
         """CLIENT_RESP_DONE without CLIENT_SEND: no request_duration."""
         emitter = FakeEmitter()
         agg = StubAggregator(emitter)
@@ -326,7 +326,7 @@ class TestTextAccumulation:
         assert row.prompt_text == "What is AI?"
 
     @pytest.mark.asyncio
-    async def test_issued_with_token_ids_emits_isl_directly(self):
+    async def test_token_ids_emit_isl_directly(self):
         """SGLang path: PromptData with token_ids emits ISL = len(token_ids)
         without tokenization."""
         emitter = FakeEmitter()

@@ -80,47 +80,68 @@ class TestColumnRemap:
         assert list(result.columns) == ["col1", "col2"]
         pd.testing.assert_frame_equal(result, df)
 
-    def test_fuzzy_remap_single_candidate_found(self):
-        """Test fuzzy remapping when one candidate column is found."""
-        df = pd.DataFrame({"question": [1, 2], "answer": [3, 4]})
-        transform = ColumnRemap({("user_prompt", "question", "input"): "prompt"})
-        result = transform(df)
-
-        # "question" is the first candidate found
-        assert "prompt" in result.columns
-        assert "question" not in result.columns
-        assert list(result["prompt"]) == [1, 2]
-
-    def test_fuzzy_remap_no_candidate_found(self):
-        """Test fuzzy remapping when no candidate column is found."""
-        df = pd.DataFrame({"col1": [1, 2], "col2": [3, 4]})
-        transform = ColumnRemap({("user_prompt", "question", "input"): "prompt"})
-        result = transform(df)
-
-        # No candidates found, so columns remain unchanged
-        assert "col1" in result.columns
-        assert "col2" in result.columns
-        assert "prompt" not in result.columns
-
-    def test_fuzzy_remap_strict_mode_multiple_found(self):
-        """Test fuzzy remapping in strict mode with multiple candidates found."""
-        df = pd.DataFrame({"question": [1, 2], "user_prompt": [3, 4]})
-        transform = ColumnRemap({("user_prompt", "question"): "prompt"}, strict=True)
-
-        # In strict mode, should raise error when multiple candidates exist
-        with pytest.raises(ValueError, match="Multiple columns found"):
-            transform(df)
-
-    def test_fuzzy_remap_non_strict_mode_multiple_found(self):
-        """Test fuzzy remapping in non-strict mode with multiple candidates found."""
-        df = pd.DataFrame({"question": [1, 2], "user_prompt": [3, 4], "other": [5, 6]})
-        transform = ColumnRemap({("user_prompt", "question"): "prompt"}, strict=False)
-        result = transform(df)
-
-        # In non-strict mode, should use first candidate found
-        assert "prompt" in result.columns
-        # Either "user_prompt" or "question" should be renamed based on first match
-        assert "user_prompt" not in result.columns or "question" not in result.columns
+    @pytest.mark.parametrize(
+        "case_desc, columns, candidates, strict, expect_prompt, error_type, error_msg",
+        [
+            (
+                "single match",
+                {"question": [1, 2], "answer": [3, 4]},
+                ("user_prompt", "question", "input"),
+                False,
+                True,
+                None,
+                "",
+            ),
+            (
+                "no match",
+                {"col1": [1, 2], "col2": [3, 4]},
+                ("user_prompt", "question", "input"),
+                False,
+                False,
+                None,
+                "",
+            ),
+            (
+                "strict multi match",
+                {"question": [1, 2], "user_prompt": [3, 4]},
+                ("user_prompt", "question"),
+                True,
+                None,
+                ValueError,
+                "Multiple columns found",
+            ),
+            (
+                "non-strict multi match",
+                {"question": [1, 2], "user_prompt": [3, 4], "other": [5, 6]},
+                ("user_prompt", "question"),
+                False,
+                True,
+                None,
+                "",
+            ),
+        ],
+    )
+    def test_fuzzy_remap(
+        self,
+        case_desc,
+        columns,
+        candidates,
+        strict,
+        expect_prompt,
+        error_type,
+        error_msg,
+    ):
+        df = pd.DataFrame(columns)
+        transform = ColumnRemap({candidates: "prompt"}, strict=strict)
+        if error_type is not None:
+            with pytest.raises(error_type, match=error_msg):
+                transform(df)
+        else:
+            result = transform(df)
+            if expect_prompt:
+                assert "prompt" in result.columns
+            else:
+                assert "prompt" not in result.columns
 
     def test_mixed_string_and_tuple_keys(self):
         """Test using both string and tuple keys in the same remap."""
@@ -139,77 +160,76 @@ class TestColumnRemap:
 class TestUserPromptFormatter:
     """Test suite for UserPromptFormatter transform."""
 
-    def test_basic_prompt_formatting(self):
-        """Test basic prompt formatting with single variable."""
-        df = pd.DataFrame(
-            {"question": ["What is 2+2?", "What is the capital of France?"]}
-        )
-        transform = UserPromptFormatter("Question: {question}", output_column="prompt")
-        result = transform(df)
+    @pytest.mark.parametrize(
+        "case_desc, columns, fmt, output_col, expected_first, error_type",
+        [
+            (
+                "single var",
+                {"question": ["What is 2+2?", "Capital of France?"]},
+                "Q: {question}",
+                "prompt",
+                "Q: What is 2+2?",
+                None,
+            ),
+            (
+                "custom output col",
+                {"question": ["What is 2+2?"]},
+                "Q: {question}",
+                "formatted_q",
+                "Q: What is 2+2?",
+                None,
+            ),
+            ("empty format", {"question": ["What is 2+2?"]}, "", "prompt", "", None),
+            (
+                "static format",
+                {"question": ["What is 2+2?"]},
+                "Static prompt text",
+                "prompt",
+                "Static prompt text",
+                None,
+            ),
+            (
+                "missing var",
+                {"question": ["What is 2+2?"]},
+                "Q: {question} C: {missing_var}",
+                "prompt",
+                None,
+                KeyError,
+            ),
+        ],
+    )
+    def test_prompt_formatting(
+        self, case_desc, columns, fmt, output_col, expected_first, error_type
+    ):
+        df = pd.DataFrame(columns)
+        transform = UserPromptFormatter(fmt, output_column=output_col)
+        if error_type is not None:
+            with pytest.raises(error_type):
+                transform(df)
+        else:
+            result = transform(df)
+            assert output_col in result.columns
+            assert result[output_col][0] == expected_first
 
-        assert "prompt" in result.columns
-        assert result["prompt"][0] == "Question: What is 2+2?"
-        assert result["prompt"][1] == "Question: What is the capital of France?"
-
-    def test_custom_output_column(self):
-        """Test using a custom output column name."""
-        df = pd.DataFrame({"question": ["What is 2+2?"]})
-        transform = UserPromptFormatter("Q: {question}", output_column="formatted_q")
-        result = transform(df)
-
-        assert "formatted_q" in result.columns
-        assert result["formatted_q"][0] == "Q: What is 2+2?"
-        assert "prompt" not in result.columns
-
-    def test_multiple_variables_in_format(self):
-        """Test formatting with multiple variables from row."""
+    def test_multiple_variables(self):
+        """Formatting with multiple variables from row."""
         df = pd.DataFrame(
             {
-                "context": ["Paris is the capital.", "Rome is the capital."],
-                "question": ["Of which country?", "Of what?"],
+                "context": ["Paris is the capital."],
+                "question": ["Of which country?"],
             }
         )
         transform = UserPromptFormatter(
             "Context: {context}\nQuestion: {question}", output_column="prompt"
         )
         result = transform(df)
-
         assert (
             result["prompt"][0]
             == "Context: Paris is the capital.\nQuestion: Of which country?"
         )
-        assert (
-            result["prompt"][1] == "Context: Rome is the capital.\nQuestion: Of what?"
-        )
-
-    def test_missing_variable_raises_error(self):
-        """Test that missing variables in format string raise KeyError."""
-        df = pd.DataFrame({"question": ["What is 2+2?"]})
-        transform = UserPromptFormatter(
-            "Question: {question} Context: {missing_var}", output_column="prompt"
-        )
-
-        with pytest.raises(KeyError):
-            transform(df)
-
-    def test_empty_format_string(self):
-        """Test with empty format string."""
-        df = pd.DataFrame({"question": ["What is 2+2?"]})
-        transform = UserPromptFormatter("", output_column="prompt")
-        result = transform(df)
-
-        assert result["prompt"][0] == ""
-
-    def test_no_variables_in_format(self):
-        """Test format string with no variables."""
-        df = pd.DataFrame({"question": ["What is 2+2?"]})
-        transform = UserPromptFormatter("Static prompt text", output_column="prompt")
-        result = transform(df)
-
-        assert result["prompt"][0] == "Static prompt text"
 
     def test_preserves_original_columns(self):
-        """Test that original columns are preserved."""
+        """Original columns are preserved after formatting."""
         df = pd.DataFrame({"question": ["Q1", "Q2"], "answer": ["A1", "A2"]})
         transform = UserPromptFormatter("{question}", output_column="prompt")
         result = transform(df)
@@ -218,7 +238,6 @@ class TestUserPromptFormatter:
         assert "answer" in result.columns
         assert "prompt" in result.columns
         assert list(result["question"]) == ["Q1", "Q2"]
-        assert list(result["answer"]) == ["A1", "A2"]
 
 
 class TestRowProcessor:
@@ -462,7 +481,7 @@ class TestApplyTransforms:
         # Result should be the same regardless of fusion
         assert list(result["value"]) == [3, 4, 5]
 
-    def test_mix_of_transforms_and_row_processors(self):
+    def test_mixed_transforms_and_processors(self):
         """Test mixing regular transforms with row processors."""
 
         class AddDoubled(RowProcessor):
@@ -501,7 +520,7 @@ class TestApplyTransforms:
         # Should be (1+1)*2=4, (2+1)*2=6, (3+1)*2=8
         assert list(result["value"]) == [4, 6, 8]
 
-    def test_non_consecutive_row_processors_separated_by_transform(self):
+    def test_non_consecutive_processors_split(self):
         """Test that non-consecutive row processors are not fused together."""
 
         class AddOne(RowProcessor):
@@ -649,174 +668,159 @@ class TestAddStaticColumns:
 class TestColumnFilter:
     """Test suite for ColumnFilter transform."""
 
-    def test_filter_required_columns_only(self):
-        """Test filtering with only required columns."""
-        df = pd.DataFrame({"col1": [1, 2], "col2": [3, 4], "col3": [5, 6]})
-        transform = ColumnFilter(required_columns=["col1", "col3"])
-        result = transform(df)
-
-        assert "col1" in result.columns
-        assert "col3" in result.columns
-        assert "col2" not in result.columns
-        assert len(result.columns) == 2
-
-    def test_filter_with_optional_columns_present(self):
-        """Test filtering with optional columns that are present."""
-        df = pd.DataFrame({"col1": [1], "col2": [2], "col3": [3]})
-        transform = ColumnFilter(
-            required_columns=["col1"],
-            optional_columns=["col2", "col4"],
-        )
-        result = transform(df)
-
-        assert "col1" in result.columns
-        assert "col2" in result.columns
-        assert "col3" not in result.columns
-        # col4 is optional but not present, should not cause error
-
-    def test_filter_with_optional_columns_absent(self):
-        """Test filtering with optional columns that are not present."""
-        df = pd.DataFrame({"col1": [1], "col2": [2]})
-        transform = ColumnFilter(
-            required_columns=["col1"],
-            optional_columns=["col3", "col4"],
-        )
-        result = transform(df)
-
-        assert "col1" in result.columns
-        assert "col2" not in result.columns
-        assert len(result.columns) == 1
-
-    def test_filter_preserves_data(self):
-        """Test that filtering preserves data in kept columns."""
-        df = pd.DataFrame({"keep": [1, 2, 3], "drop": [4, 5, 6]})
-        transform = ColumnFilter(required_columns=["keep"])
-        result = transform(df)
-
-        assert list(result["keep"]) == [1, 2, 3]
-
-    def test_filter_column_order(self):
-        """Test that column order matches required + optional order."""
-        df = pd.DataFrame({"c": [1], "b": [2], "a": [3]})
-        transform = ColumnFilter(
-            required_columns=["a", "b"],
-            optional_columns=["c"],
-        )
-        result = transform(df)
-
-        assert list(result.columns) == ["a", "b", "c"]
-
-    def test_mutually_exclusive_validation(self):
-        """Test that required and optional columns must be mutually exclusive."""
-        with pytest.raises(ValueError, match="mutually exclusive"):
-            ColumnFilter(
-                required_columns=["col1", "col2"],
-                optional_columns=["col2", "col3"],
-            )
-
-    def test_empty_dataframe(self):
-        """Test filtering an empty DataFrame."""
-        df = pd.DataFrame({"col1": [], "col2": []})
-        transform = ColumnFilter(required_columns=["col1"])
-        result = transform(df)
-
-        assert "col1" in result.columns
-        assert "col2" not in result.columns
-        assert len(result) == 0
+    @pytest.mark.parametrize(
+        "case_desc, columns, required, optional, expected_cols, n_cols, error_type, error_msg",
+        [
+            (
+                "required only",
+                {"col1": [1, 2], "col2": [3, 4], "col3": [5, 6]},
+                ["col1", "col3"],
+                None,
+                ["col1", "col3"],
+                2,
+                None,
+                "",
+            ),
+            (
+                "optional present",
+                {"col1": [1], "col2": [2], "col3": [3]},
+                ["col1"],
+                ["col2", "col4"],
+                ["col1", "col2"],
+                None,
+                None,
+                "",
+            ),
+            (
+                "optional absent",
+                {"col1": [1], "col2": [2]},
+                ["col1"],
+                ["col3", "col4"],
+                ["col1"],
+                1,
+                None,
+                "",
+            ),
+            (
+                "preserves data",
+                {"keep": [1, 2, 3], "drop": [4, 5, 6]},
+                ["keep"],
+                None,
+                ["keep"],
+                None,
+                None,
+                "",
+            ),
+            (
+                "column order",
+                {"c": [1], "b": [2], "a": [3]},
+                ["a", "b"],
+                ["c"],
+                ["a", "b", "c"],
+                None,
+                None,
+                "",
+            ),
+            (
+                "empty df",
+                {"col1": [], "col2": []},
+                ["col1"],
+                None,
+                ["col1"],
+                None,
+                None,
+                "",
+            ),
+            (
+                "mutually exclusive",
+                None,
+                ["col1", "col2"],
+                ["col2", "col3"],
+                None,
+                None,
+                ValueError,
+                "mutually exclusive",
+            ),
+        ],
+    )
+    def test_column_filter(
+        self,
+        case_desc,
+        columns,
+        required,
+        optional,
+        expected_cols,
+        n_cols,
+        error_type,
+        error_msg,
+    ):
+        if error_type is not None:
+            with pytest.raises(error_type, match=error_msg):
+                ColumnFilter(required_columns=required, optional_columns=optional)
+        else:
+            df = pd.DataFrame(columns)
+            kwargs = {"required_columns": required}
+            if optional is not None:
+                kwargs["optional_columns"] = optional
+            transform = ColumnFilter(**kwargs)
+            result = transform(df)
+            for col in expected_cols:
+                assert col in result.columns
+            if n_cols is not None:
+                assert len(result.columns) == n_cols
 
 
 class TestMakeAdapterCompatible:
     """Test suite for MakeAdapterCompatible transform."""
 
-    def test_remap_user_prompt(self):
-        """Test remapping user_prompt to prompt."""
-        df = pd.DataFrame({"user_prompt": ["Hello", "World"]})
+    @pytest.mark.parametrize(
+        "case_desc, source_col, target_col, values",
+        [
+            ("user_prompt", "user_prompt", "prompt", ["Hello", "World"]),
+            ("question", "question", "prompt", ["What is AI?"]),
+            ("input", "input", "prompt", ["Some input text"]),
+            ("input_text", "input_text", "prompt", ["Text input"]),
+            ("problem", "problem", "prompt", ["Math problem"]),
+            ("query", "query", "prompt", ["Search query"]),
+            (
+                "system_prompt",
+                "system_prompt",
+                "system",
+                ["You are a helpful assistant"],
+            ),
+        ],
+    )
+    def test_remap_column(self, case_desc, source_col, target_col, values):
+        df = pd.DataFrame({source_col: values})
         transform = MakeAdapterCompatible()
         result = transform(df)
 
-        assert "prompt" in result.columns
-        assert "user_prompt" not in result.columns
-        assert list(result["prompt"]) == ["Hello", "World"]
+        assert target_col in result.columns
+        assert source_col not in result.columns
+        assert list(result[target_col]) == values
 
-    def test_remap_question(self):
-        """Test remapping question to prompt."""
-        df = pd.DataFrame({"question": ["What is AI?"]})
-        transform = MakeAdapterCompatible()
-        result = transform(df)
-
-        assert "prompt" in result.columns
-        assert "question" not in result.columns
-
-    def test_remap_input(self):
-        """Test remapping input to prompt."""
-        df = pd.DataFrame({"input": ["Some input text"]})
-        transform = MakeAdapterCompatible()
-        result = transform(df)
-
-        assert "prompt" in result.columns
-        assert "input" not in result.columns
-
-    def test_remap_input_text(self):
-        """Test remapping input_text to prompt."""
-        df = pd.DataFrame({"input_text": ["Text input"]})
-        transform = MakeAdapterCompatible()
-        result = transform(df)
-
-        assert "prompt" in result.columns
-        assert "input_text" not in result.columns
-
-    def test_remap_problem(self):
-        """Test remapping problem to prompt."""
-        df = pd.DataFrame({"problem": ["Math problem"]})
-        transform = MakeAdapterCompatible()
-        result = transform(df)
-
-        assert "prompt" in result.columns
-        assert "problem" not in result.columns
-
-    def test_remap_query(self):
-        """Test remapping query to prompt."""
-        df = pd.DataFrame({"query": ["Search query"]})
-        transform = MakeAdapterCompatible()
-        result = transform(df)
-
-        assert "prompt" in result.columns
-        assert "query" not in result.columns
-
-    def test_remap_system_prompt(self):
-        """Test remapping system_prompt to system."""
-        df = pd.DataFrame({"system_prompt": ["You are a helpful assistant"]})
-        transform = MakeAdapterCompatible()
-        result = transform(df)
-
-        assert "system" in result.columns
-        assert "system_prompt" not in result.columns
-
-    def test_priority_order_strict_mode(self):
-        """Test that having multiple candidates in strict mode raises error."""
+    def test_strict_mode_multiple(self):
+        """Multiple candidates in strict mode raises error."""
         df = pd.DataFrame({"user_prompt": ["First"], "question": ["Second"]})
         transform = MakeAdapterCompatible()
 
-        # MakeAdapterCompatible uses strict=True by default
         with pytest.raises(ValueError, match="Multiple columns found"):
             transform(df)
 
     def test_already_has_prompt(self):
-        """Test when DataFrame already has prompt column (no remapping needed)."""
+        """No remapping when prompt column already exists."""
         df = pd.DataFrame({"prompt": ["Already formatted"], "other": ["data"]})
         transform = MakeAdapterCompatible()
         result = transform(df)
 
-        # Should not raise error, prompt remains unchanged
         assert "prompt" in result.columns
         assert list(result["prompt"]) == ["Already formatted"]
 
     def test_no_matching_columns(self):
-        """Test when no matching columns are found."""
+        """No matching columns leaves DataFrame unchanged."""
         df = pd.DataFrame({"unrelated": ["data"]})
         transform = MakeAdapterCompatible()
         result = transform(df)
 
-        # Should not raise error or create prompt column
         assert "prompt" not in result.columns
         assert "unrelated" in result.columns

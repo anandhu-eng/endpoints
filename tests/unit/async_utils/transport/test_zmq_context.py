@@ -30,7 +30,7 @@ from inference_endpoint.async_utils.transport.zmq.context import ManagedZMQConte
 class TestManagedZMQContextCreation:
     """Tests for ManagedZMQContext creation and attributes."""
 
-    def test_scoped_yields_context_with_ctx_and_socket_dir(self):
+    def test_scoped_yields_ctx_and_socket_dir(self):
         """scoped() yields a context with valid .ctx and .socket_dir."""
         with ManagedZMQContext.scoped() as ctx:
             assert ctx.ctx is not None
@@ -166,7 +166,7 @@ class TestManagedZMQContextScoped:
             assert ctx2.socket_dir is not None
             ctx2.socket(zmq.PULL)
 
-    def test_two_scoped_share_singleton_second_does_not_cleanup(self):
+    def test_second_scoped_skips_cleanup(self):
         """Nested or sequential scoped() with existing singleton: second does not cleanup."""
         # First scoped creates and owns
         with ManagedZMQContext.scoped() as ctx1:

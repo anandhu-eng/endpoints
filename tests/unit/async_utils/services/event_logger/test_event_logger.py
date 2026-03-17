@@ -118,17 +118,17 @@ def _make_stub(*args, **kwargs) -> tuple[StubEventLoggerService, list[FakeWriter
 
 @pytest.mark.unit
 class TestIsErrorEvent:
-    def test_error_event_types(self):
-        for et in ErrorEventType:
-            assert _is_error_event(_record(et)) is True
-
-    def test_session_events_are_not_errors(self):
-        for et in SessionEventType:
-            assert _is_error_event(_record(et)) is False
-
-    def test_sample_events_are_not_errors(self):
-        for et in SampleEventType:
-            assert _is_error_event(_record(et)) is False
+    @pytest.mark.parametrize(
+        "case_desc, event_type_class, expected",
+        [
+            ("error events", ErrorEventType, True),
+            ("session events", SessionEventType, False),
+            ("sample events", SampleEventType, False),
+        ],
+    )
+    def test_is_error_event(self, case_desc, event_type_class, expected):
+        for et in event_type_class:
+            assert _is_error_event(_record(et)) is expected
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +181,7 @@ class TestWriteDispatch:
 @pytest.mark.unit
 class TestShutdownBehavior:
     @pytest.mark.asyncio
-    async def test_session_ended_triggers_flush_and_close(self):
+    async def test_ended_triggers_flush_close(self):
         service, writers = _make_stub()
         await service.process([_record(SessionEventType.ENDED, ts=100)])
         for writer in writers:
@@ -216,7 +216,7 @@ class TestShutdownBehavior:
         assert len(new_writer.written) == 0
 
     @pytest.mark.asyncio
-    async def test_non_error_events_after_ended_in_same_batch_dropped(self):
+    async def test_non_errors_after_ended_same_batch(self):
         service, writers = _make_stub()
         await service.process(
             [
@@ -230,7 +230,7 @@ class TestShutdownBehavior:
             assert writer.written[0].event_type == SessionEventType.ENDED
 
     @pytest.mark.asyncio
-    async def test_error_events_after_ended_in_same_batch_still_written(self):
+    async def test_errors_after_ended_same_batch_kept(self):
         service, writers = _make_stub()
         err_data = ErrorData(error_type="TestError", error_message="boom")
         await service.process(
@@ -244,7 +244,7 @@ class TestShutdownBehavior:
             assert writer.written[1].event_type == ErrorEventType.GENERIC
 
     @pytest.mark.asyncio
-    async def test_error_events_after_ended_in_later_batch_dropped(self):
+    async def test_errors_after_ended_later_batch(self):
         """Error events are only kept in the same batch as ENDED.
 
         After the batch containing ENDED completes, writers are closed and
@@ -519,47 +519,42 @@ class TestIntegrationWithRealWriters:
 @pytest.mark.unit
 class TestEdgeCases:
     @pytest.mark.asyncio
-    async def test_all_error_event_types_are_recognized(self):
+    @pytest.mark.parametrize(
+        "case_desc, event_type_class, use_uuid",
+        [
+            ("error events", ErrorEventType, False),
+            ("session events", SessionEventType, False),
+            ("sample events", SampleEventType, True),
+        ],
+    )
+    async def test_all_event_types_written(self, case_desc, event_type_class, use_uuid):
         service, writers = _make_stub()
-        error_records = [_record(et, ts=i) for i, et in enumerate(ErrorEventType)]
-        await service.process(error_records)
-        for writer in writers:
-            assert len(writer.written) == len(list(ErrorEventType))
-
-    @pytest.mark.asyncio
-    async def test_all_session_event_types_written(self):
-        service, writers = _make_stub()
-        session_records = [_record(et, ts=i) for i, et in enumerate(SessionEventType)]
-        await service.process(session_records)
-        for writer in writers:
-            # All session events should be written
-            # (ENDED is among them but everything in the batch up to and including ENDED is written)
-            assert len(writer.written) == len(list(SessionEventType))
-
-    @pytest.mark.asyncio
-    async def test_all_sample_event_types_written(self):
-        service, writers = _make_stub()
-        sample_records = [
-            _record(et, uuid="s1", ts=i) for i, et in enumerate(SampleEventType)
+        records = [
+            _record(et, uuid="s1" if use_uuid else "", ts=i)
+            for i, et in enumerate(event_type_class)
         ]
-        await service.process(sample_records)
+        await service.process(records)
         for writer in writers:
-            assert len(writer.written) == len(list(SampleEventType))
+            assert len(writer.written) == len(list(event_type_class))
 
     @pytest.mark.asyncio
-    async def test_record_with_no_data(self):
+    @pytest.mark.parametrize(
+        "case_desc, event_type, data, expected_data",
+        [
+            ("no data", SampleEventType.ISSUED, None, None),
+            (
+                "error data",
+                ErrorEventType.CLIENT,
+                ErrorData(error_type="SomeError", error_message="detail"),
+                ErrorData(error_type="SomeError", error_message="detail"),
+            ),
+        ],
+    )
+    async def test_record_data(self, case_desc, event_type, data, expected_data):
         service, writers = _make_stub()
-        await service.process([_record(SampleEventType.ISSUED, uuid="s1")])
+        await service.process([_record(event_type, uuid="s1", data=data)])
         for writer in writers:
-            assert writer.written[0].data is None
-
-    @pytest.mark.asyncio
-    async def test_record_with_error_data(self):
-        service, writers = _make_stub()
-        err = ErrorData(error_type="SomeError", error_message="detail")
-        await service.process([_record(ErrorEventType.CLIENT, data=err)])
-        for writer in writers:
-            assert writer.written[0].data == err
+            assert writer.written[0].data == expected_data
 
     @pytest.mark.asyncio
     async def test_large_batch(self):

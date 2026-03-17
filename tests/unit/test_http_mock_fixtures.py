@@ -56,7 +56,7 @@ class TestHttpEchoMockFixtures:
                 assert response_data["request"]["json_payload"] == payload
 
     @pytest.mark.asyncio
-    async def test_mock_http_echo_server_chat_completions(self, mock_http_echo_server):
+    async def test_echo_server_chat_completions(self, mock_http_echo_server):
         """Test basic echo functionality of the real HTTP server."""
 
         # Make a real HTTP OpenAI chat completions request to the server
@@ -85,9 +85,7 @@ class TestHttpEchoMockFixtures:
                 )
 
     @pytest.mark.asyncio
-    async def test_real_http_server_post_request_with_max_osl(
-        self, mock_http_echo_server
-    ):
+    async def test_real_server_post_with_max_osl(self, mock_http_echo_server):
         """Test POST request to real HTTP server."""
         old_max_osl = mock_http_echo_server.get_max_osl()
         mock_http_echo_server.set_max_osl(100)
