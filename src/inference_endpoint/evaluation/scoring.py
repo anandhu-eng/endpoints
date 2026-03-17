@@ -37,6 +37,7 @@ except ImportError:
     websocket = None
 
 from ..dataset_manager.dataset import Dataset
+from ..dataset_manager.predefined.shopify_product_catalogue import ProductMetadata
 from ..load_generator.events import SampleEvent
 from .extractor import Extractor, PythonCodeExtractor
 
@@ -660,22 +661,6 @@ _CATEGORY_SEPARATOR = " > "
 
 # Pad tokens for unparsable responses (matches MLCommons Q3VL evaluation.py)
 _PRED_CATEGORY_PAD = "<|__PRED_CATEGORY_PAD__|>"
-
-
-class ProductMetadata(BaseModel):
-    """JSON format for expected VLM responses (matches MLCommons Q3VL schema).
-
-    Reference: https://github.com/mlcommons/inference/blob/master/multimodal/qwen3-vl/src/mlperf_inf_mm_q3vl/schema.py
-    """
-
-    category: str
-    """Complete category path, e.g. 'Clothing & Accessories > Clothing > Shirts > Polo Shirts'."""
-
-    brand: str
-    """Brand of the product, e.g. 'giorgio armani'."""
-
-    is_secondhand: bool
-    """True if second-hand, False otherwise."""
 
 
 def _create_pred_pad_category(ground_truth: str, separator: str) -> str:

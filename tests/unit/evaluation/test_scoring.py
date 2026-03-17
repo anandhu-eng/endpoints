@@ -20,9 +20,11 @@ from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
+from inference_endpoint.dataset_manager.predefined.shopify_product_catalogue import (
+    ProductMetadata,
+)
 from inference_endpoint.evaluation.scoring import (
     _PRED_CATEGORY_PAD,
-    ProductMetadata,
     Scorer,
     ShopifyCategoryF1Scorer,
     _calculate_hierarchical_f1,

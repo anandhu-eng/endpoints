@@ -20,40 +20,7 @@ from typing import Any
 
 from inference_endpoint.dataset_manager.transforms import RowProcessor, Transform
 
-
-def _product_metadata_schema() -> dict[str, Any]:
-    """JSON schema for ProductMetadata output (category, brand, is_secondhand).
-
-    Matches ProductMetadata.model_json_schema() from mlperf_inf_mm_q3vl.schema at https://github.com/mlcommons/inference/blob/master/multimodal/qwen3-vl/src/mlperf_inf_mm_q3vl/schema.py#L822.
-    """
-    return {
-        "type": "object",
-        "title": "ProductMetadata",
-        "description": "Json format for the expected responses from the VLM.",
-        "properties": {
-            "category": {
-                "type": "string",
-                "title": "Category",
-                "description": (
-                    "The complete category of the product, e.g.,\n"
-                    '"Clothing & Accessories > Clothing > Shirts > Polo Shirts".\n'
-                    'Each categorical level is separated by " > ".'
-                ),
-            },
-            "brand": {
-                "type": "string",
-                "title": "Brand",
-                "description": 'The brand of the product, e.g., "giorgio armani".',
-            },
-            "is_secondhand": {
-                "type": "boolean",
-                "title": "Is Secondhand",
-                "description": "True if the product is second-hand, False otherwise.",
-            },
-        },
-        "required": ["category", "brand", "is_secondhand"],
-        "additionalProperties": False,
-    }
+from . import ProductMetadata
 
 
 class ShopifyMultimodalFormatter(RowProcessor):
@@ -71,7 +38,7 @@ class ShopifyMultimodalFormatter(RowProcessor):
         image_base64 = row.get("product_image_base64", "")
         image_format = row.get("product_image_format", "JPEG")
 
-        schema_str = json.dumps(_product_metadata_schema(), indent=2)
+        schema_str = json.dumps(ProductMetadata.model_json_schema(), indent=2)
 
         system = f"""Please analyze the product from the user prompt
 and provide the following fields in a valid JSON object:
