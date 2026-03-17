@@ -461,15 +461,20 @@ def _run_benchmark(
         from inference_endpoint.dataset_manager.predefined.random import RandomDataset
 
         warmup_cfg = config.warmup
-        warmup_df = RandomDataset.generate(
-            datasets_dir=None,
-            force=False,
-            num_sequences=warmup_cfg.num_samples,
-            input_seq_length=warmup_cfg.input_seq_length,
-            range_ratio=warmup_cfg.range_ratio,
-            random_seed=warmup_cfg.random_seed,
-            tokenizer=tokenizer,
-        )
+        try:
+            warmup_df = RandomDataset.generate(
+                datasets_dir=None,
+                force=False,
+                num_sequences=warmup_cfg.num_samples,
+                input_seq_length=warmup_cfg.input_seq_length,
+                range_ratio=warmup_cfg.range_ratio,
+                random_seed=warmup_cfg.random_seed,
+                tokenizer=tokenizer,
+            )
+        except (ValueError, TypeError) as e:
+            raise InputValidationError(
+                f"Failed to generate warmup dataset from warmup config: {e}"
+            ) from e
         warmup_dataset = RandomDataset(warmup_df)
         warmup_model_params = ModelParams(
             name=config.model_params.name,

@@ -250,10 +250,10 @@ class WarmupConfig(BaseModel):
         random_seed: Seed for reproducible warmup data generation.
     """
 
-    num_samples: int = 100
-    input_seq_length: int = 512
-    output_seq_length: int = 128
-    range_ratio: float = 1.0
+    num_samples: int = Field(100, gt=0)
+    input_seq_length: int = Field(512, gt=0)
+    output_seq_length: int = Field(128, gt=0)
+    range_ratio: float = Field(1.0, ge=0.0, le=1.0)
     random_seed: int = 42
 
 

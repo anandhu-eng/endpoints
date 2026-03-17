@@ -81,7 +81,7 @@ class BenchmarkSession:
         perf_test_generator: LoadGenerator,
         accuracy_test_generators: dict[str, LoadGenerator] | None = None,
         warmup_generator: LoadGenerator | None = None,
-        max_shutdown_timeout_s: float = 300.0,
+        max_shutdown_timeout_s: float | None = 300.0,
         report_dir: os.PathLike | None = None,
         tokenizer_override: AutoTokenizer | None = None,
         dump_events_log: bool = False,
@@ -100,7 +100,10 @@ class BenchmarkSession:
                     )
                     warmup_start = time.monotonic()
                     while self.event_recorder.n_inflight_samples != 0:
-                        if time.monotonic() - warmup_start > max_shutdown_timeout_s:
+                        if (
+                            max_shutdown_timeout_s is not None
+                            and time.monotonic() - warmup_start > max_shutdown_timeout_s
+                        ):
                             self.logger.warning(
                                 "Warmup drain timeout exceeded, proceeding to performance test"
                             )
@@ -321,7 +324,7 @@ class BenchmarkSession:
                 metric_target=runtime_settings.metric_target,
                 reported_metrics=runtime_settings.reported_metrics,
                 min_duration_ms=0,
-                max_duration_ms=runtime_settings.max_duration_ms,
+                max_duration_ms=None,
                 n_samples_from_dataset=warmup_n,
                 n_samples_to_issue=warmup_n,
                 min_sample_count=warmup_n,

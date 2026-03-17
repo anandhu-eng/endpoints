@@ -17,15 +17,25 @@
 
 import argparse
 import textwrap
+from unittest.mock import MagicMock, patch
 
 import pytest
 from inference_endpoint.commands.benchmark import run_benchmark_command
 
 
+@pytest.fixture
+def mock_tokenizer():
+    tok = MagicMock()
+    tok.vocab_size = 1000
+    tok.decode.side_effect = lambda ids, **kwargs: " ".join(str(i) for i in ids)
+    tok.tokenize.side_effect = lambda text, **kwargs: text.split()
+    return tok
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_warmup_offline_with_echo_server(
-    mock_http_echo_server, ds_pickle_dataset_path, tmp_path, caplog
+    mock_http_echo_server, ds_pickle_dataset_path, tmp_path, caplog, mock_tokenizer
 ):
     """Warmup phase runs and completes before the performance test starts."""
     config_yaml = textwrap.dedent(f"""
@@ -82,19 +92,25 @@ async def test_warmup_offline_with_echo_server(
         verbose=1,
     )
 
-    with caplog.at_level("INFO"):
+    with (
+        caplog.at_level("INFO"),
+        patch(
+            "inference_endpoint.commands.benchmark.AutoTokenizer.from_pretrained",
+            return_value=mock_tokenizer,
+        ),
+    ):
         await run_benchmark_command(args)
 
     log_text = caplog.text
     assert "Warmup: issuing samples" in log_text, "Warmup did not start"
     assert "Warmup complete" in log_text, "Warmup did not complete"
-    assert "QPS:" in log_text, "Performance test did not run after warmup"
+    assert "Estimated QPS:" in log_text, "Performance test did not run after warmup"
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_warmup_online_with_echo_server(
-    mock_http_echo_server, ds_pickle_dataset_path, tmp_path, caplog
+    mock_http_echo_server, ds_pickle_dataset_path, tmp_path, caplog, mock_tokenizer
 ):
     """Warmup phase runs before the online (Poisson) performance test."""
     config_yaml = textwrap.dedent(f"""
@@ -152,10 +168,16 @@ async def test_warmup_online_with_echo_server(
         verbose=1,
     )
 
-    with caplog.at_level("INFO"):
+    with (
+        caplog.at_level("INFO"),
+        patch(
+            "inference_endpoint.commands.benchmark.AutoTokenizer.from_pretrained",
+            return_value=mock_tokenizer,
+        ),
+    ):
         await run_benchmark_command(args)
 
     log_text = caplog.text
     assert "Warmup: issuing samples" in log_text, "Warmup did not start"
     assert "Warmup complete" in log_text, "Warmup did not complete"
-    assert "QPS:" in log_text, "Performance test did not run after warmup"
+    assert "Estimated QPS:" in log_text, "Performance test did not run after warmup"
