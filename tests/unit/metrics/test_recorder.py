@@ -378,9 +378,7 @@ MemStat = namedtuple("MemStat", ["total", "used", "free"])
     ],
 )
 @patch("inference_endpoint.metrics.recorder.shutil.disk_usage")
-def test_shm_memory_error(
-    mock_run, case_desc, mem_stat, min_req, expected_msg, extra_msg
-):
+def test_shm_memory_error(mock_run, case_desc, mem_stat, min_req, expected_msg, extra_msg):
     mock_run.return_value = mem_stat
     with pytest.raises(MemoryError, match=expected_msg) as err:
         EventRecorder(min_memory_req_bytes=min_req)
