@@ -237,9 +237,7 @@ def test_max_duration_ms_stops_issuance(load_sample_data_mock, event_recorder_mo
 @patch(
     "inference_endpoint.load_generator.load_generator.LoadGenerator.load_sample_data"
 )
-def test_max_duration_ms_stops_issuance_with_poisson_scheduler(
-    load_sample_data_mock, event_recorder_mock
-):
+def test_max_duration_stops_poisson_sched(load_sample_data_mock, event_recorder_mock):
     """max_duration_ms should stop iteration even when the scheduler has inter-sample delays.
 
     Uses PoissonDistributionScheduler at low QPS so each inter-sample wait is measurable.

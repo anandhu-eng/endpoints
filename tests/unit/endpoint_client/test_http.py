@@ -262,7 +262,7 @@ class TestHttpResponseProtocol:
         assert b" world" in all_chunks
 
     @pytest.mark.asyncio
-    async def test_iter_body_pre_buffered_and_already_complete(self):
+    async def test_iter_body_pre_buffered_complete(self):
         """iter_body yields pre-buffered chunks and exits early if message complete."""
         loop = asyncio.get_running_loop()
         protocol = HttpResponseProtocol(loop)
@@ -355,7 +355,7 @@ class TestHttpResponseProtocol:
             await body_task
 
     @pytest.mark.asyncio
-    async def test_connection_lost_with_complete_message(self):
+    async def test_conn_lost_complete_message(self):
         """connection_lost with pending body_future and _message_complete resolves normally."""
         loop = asyncio.get_running_loop()
         protocol = HttpResponseProtocol(loop)
@@ -494,7 +494,7 @@ class TestConnectionPool:
         assert pool.total_count == 0
 
     @pytest.mark.asyncio
-    async def test_stale_connection_discarded_on_acquire(self, pool):
+    async def test_stale_conn_discarded_on_acquire(self, pool):
         """_try_get_idle discards dead connections and creates fresh ones."""
         conn1 = await pool.acquire()
         pool.release(conn1)

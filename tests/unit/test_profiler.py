@@ -89,69 +89,51 @@ class TestProfileDecorators:
     """Test the profile decorator on both sync and async functions."""
 
     @pytest.mark.skipif(is_enabled(), reason="Test only runs when profiler disabled")
-    def test_profile_decorator_sync_when_disabled(self):
-        """Test profile decorator returns original sync function when disabled."""
+    @pytest.mark.parametrize("case_desc, is_async", [("sync", False), ("async", True)])
+    def test_profile_decorator_disabled(self, case_desc, is_async):
+        """Profile decorator is no-op when disabled."""
+        if is_async:
 
-        @profile
-        def test_func(x):
-            return x * 2
-
-        # When disabled, decorator should be no-op
-        assert test_func(5) == 10
-        # Function should be unchanged
-        assert test_func.__name__ == "test_func"
-
-    @pytest.mark.skipif(is_enabled(), reason="Test only runs when profiler disabled")
-    def test_profile_decorator_async_when_disabled(self):
-        """Test profile decorator returns original async function when disabled."""
-
-        @profile
-        async def test_async_func(x):
-            await asyncio.sleep(0)
-            return x * 2
-
-        # When disabled, decorator should be no-op
-        result = asyncio.run(test_async_func(5))
-        assert result == 10
-        # Function should be unchanged
-        assert test_async_func.__name__ == "test_async_func"
-
-    def test_profile_decorator_sync_when_enabled(self):
-        """Test profile decorator wraps sync function when enabled."""
-        with mock.patch.dict(os.environ, {ENV_VAR_ENABLE_LINE_PROFILER: "1"}):
-            # Force re-initialization
-            line_profiler.ProfilerState._instance = None
-
-            # Import after setting env var
-            from inference_endpoint.profiling.line_profiler import ProfilerState
-
-            state = ProfilerState()
-
-            @state.profile
-            def test_func(x):
-                return x * 2
-
-            result = test_func(5)
-            assert result == 10
-
-    def test_profile_decorator_async_when_enabled(self):
-        """Test profile decorator wraps async function when enabled."""
-        with mock.patch.dict(os.environ, {ENV_VAR_ENABLE_LINE_PROFILER: "1"}):
-            # Force re-initialization
-            line_profiler.ProfilerState._instance = None
-
-            # Import after setting env var
-            from inference_endpoint.profiling.line_profiler import ProfilerState
-
-            state = ProfilerState()
-
-            @state.profile
-            async def test_async_func(x):
+            @profile
+            async def func(x):
                 await asyncio.sleep(0)
                 return x * 2
 
-            result = asyncio.run(test_async_func(5))
-            assert result == 10
+            assert asyncio.run(func(5)) == 10
+            assert func.__name__ == "func"
+        else:
+
+            @profile
+            def func(x):
+                return x * 2
+
+            assert func(5) == 10
+            assert func.__name__ == "func"
+
+    @pytest.mark.parametrize("case_desc, is_async", [("sync", False), ("async", True)])
+    def test_profile_decorator_enabled(self, case_desc, is_async):
+        """Profile decorator wraps function when enabled."""
+        with mock.patch.dict(os.environ, {ENV_VAR_ENABLE_LINE_PROFILER: "1"}):
+            line_profiler.ProfilerState._instance = None
+            from inference_endpoint.profiling.line_profiler import ProfilerState
+
+            state = ProfilerState()
+
+            if is_async:
+
+                @state.profile
+                async def func(x):
+                    await asyncio.sleep(0)
+                    return x * 2
+
+                assert asyncio.run(func(5)) == 10
+            else:
+
+                @state.profile
+                def func(x):
+                    return x * 2
+
+                assert func(5) == 10
 
 
 class TestProfilerMethods:
@@ -193,7 +175,7 @@ class TestProfilerMethods:
                     or "Test Worker" in output_str
                 )
 
-    def test_print_stats_no_output_when_no_functions(self):
+    def test_print_stats_no_funcs_no_output(self):
         """Test print_stats produces no output when no functions have been profiled."""
         with mock.patch.dict(os.environ, {ENV_VAR_ENABLE_LINE_PROFILER: "1"}):
             line_profiler.ProfilerState._instance = None

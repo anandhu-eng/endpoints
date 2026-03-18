@@ -52,7 +52,7 @@ class TestOpenAIAPITypes:
             },
         ]
 
-    def test_create_chat_completion_request_from_query(self):
+    def test_chat_completion_req_from_query(self):
         query = OpenAIAdapter.to_endpoint_request(
             Query(
                 id="test-123",
@@ -79,7 +79,7 @@ class TestOpenAIAPITypes:
             # TODO : cleanup this once we have a way to handle the assistant message
             #     assert message["content"] == "You are a helpful assistant."
 
-    def test_create_chat_completion_response_from_query_result(self):
+    def test_chat_completion_resp_roundtrip(self):
         message_content = "You are a helpful assistant."
         message = ChatCompletionResponseMessage(
             role=Role6.assistant,

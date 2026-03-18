@@ -13,10 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for TokenizePool thread-safety and correctness."""
+"""Tests for TokenizePool thread-safety and correctness.
+
+Uses a FakeTokenizer to avoid downloading models from HuggingFace.
+"""
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
 
 import pytest
 from inference_endpoint.async_utils.services.metrics_aggregator.token_metrics import (
@@ -24,74 +28,96 @@ from inference_endpoint.async_utils.services.metrics_aggregator.token_metrics im
 )
 
 
+class FakeTokenizer:
+    """Simple whitespace tokenizer that avoids HuggingFace downloads."""
+
+    def tokenize(self, text: str) -> list[str]:
+        return text.split()
+
+    def encode(self, text: str) -> list[int]:
+        return list(range(len(text.split())))
+
+
+@pytest.fixture(autouse=True)
+def _mock_tokenizer():
+    """Patch _get_thread_tokenizer so TokenizePool never hits the network."""
+    fake = FakeTokenizer()
+    with patch(
+        "inference_endpoint.async_utils.services.metrics_aggregator.token_metrics._get_thread_tokenizer",
+        return_value=fake,
+    ):
+        yield
+
+
 @pytest.mark.unit
 class TestTokenizePool:
     def test_tokenize_returns_tokens(self):
-        with TokenizePool("gpt2", n_workers=1) as pool:
+        with TokenizePool("fake", n_workers=1) as pool:
             tokens = pool.tokenize("Hello world")
             assert isinstance(tokens, list)
             assert len(tokens) > 0
             assert all(isinstance(t, str) for t in tokens)
 
     def test_token_count_returns_int(self):
-        with TokenizePool("gpt2", n_workers=1) as pool:
+        with TokenizePool("fake", n_workers=1) as pool:
             count = pool.token_count("Hello world")
             assert isinstance(count, int)
             assert count > 0
 
-    def test_token_count_consistent_with_tokenize(self):
-        with TokenizePool("gpt2", n_workers=1) as pool:
+    def test_count_matches_tokenize(self):
+        with TokenizePool("fake", n_workers=1) as pool:
             text = "The quick brown fox jumps over the lazy dog"
             tokens = pool.tokenize(text)
             count = pool.token_count(text)
-            # encode() includes special tokens potentially, tokenize() does not
-            # So count may be >= len(tokens). Both should be > 0.
             assert count > 0
             assert len(tokens) > 0
 
     def test_multiple_workers(self):
-        with TokenizePool("gpt2", n_workers=4) as pool:
-            results = []
-            for i in range(10):
-                results.append(pool.token_count(f"Sentence number {i}"))
+        with TokenizePool("fake", n_workers=4) as pool:
+            results = [pool.token_count(f"Sentence number {i}") for i in range(10)]
             assert all(isinstance(r, int) and r > 0 for r in results)
 
-    def test_concurrent_calls_thread_safe(self):
-        with TokenizePool("gpt2", n_workers=2) as pool:
+    def test_concurrent_thread_safe(self):
+        with TokenizePool("fake", n_workers=2) as pool:
             texts = [f"This is test sentence number {i}" for i in range(20)]
-
             with ThreadPoolExecutor(max_workers=8) as executor:
                 futures = [executor.submit(pool.token_count, t) for t in texts]
                 results = [f.result() for f in futures]
-
             assert len(results) == 20
             assert all(isinstance(r, int) and r > 0 for r in results)
 
-    def test_close_is_idempotent(self):
-        pool = TokenizePool("gpt2", n_workers=1)
-        pool.close()
-        pool.close()  # Should not raise
-
-    def test_use_after_close_raises(self):
-        pool = TokenizePool("gpt2", n_workers=1)
-        pool.close()
-        with pytest.raises(RuntimeError, match="closed"):
-            pool.tokenize("hello")
-
-    def test_n_workers_zero_raises(self):
-        with pytest.raises(ValueError, match="n_workers"):
-            TokenizePool("gpt2", n_workers=0)
+    @pytest.mark.parametrize(
+        "case_desc, action, error_type, error_msg",
+        [
+            ("close idempotent", "close_twice", None, ""),
+            ("use after close", "tokenize_after_close", RuntimeError, "closed"),
+            ("n_workers=0", "zero_workers", ValueError, "n_workers"),
+        ],
+    )
+    def test_error_cases(self, case_desc, action, error_type, error_msg):
+        if action == "close_twice":
+            pool = TokenizePool("fake", n_workers=1)
+            pool.close()
+            pool.close()
+        elif action == "tokenize_after_close":
+            pool = TokenizePool("fake", n_workers=1)
+            pool.close()
+            with pytest.raises(error_type, match=error_msg):
+                pool.tokenize("hello")
+        elif action == "zero_workers":
+            with pytest.raises(error_type, match=error_msg):
+                TokenizePool("fake", n_workers=0)
 
     @pytest.mark.asyncio
     async def test_token_count_async(self):
         loop = asyncio.get_running_loop()
-        with TokenizePool("gpt2", n_workers=1) as pool:
+        with TokenizePool("fake", n_workers=1) as pool:
             count = await pool.token_count_async("Hello world", loop)
             assert isinstance(count, int)
             assert count > 0
 
     def test_context_manager(self):
-        with TokenizePool("gpt2", n_workers=1) as pool:
+        with TokenizePool("fake", n_workers=1) as pool:
             assert pool.token_count("test") > 0
         with pytest.raises(RuntimeError, match="closed"):
             pool.tokenize("test")

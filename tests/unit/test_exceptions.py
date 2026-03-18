@@ -24,6 +24,7 @@ handling allows for:
 - Clear error categorization (validation vs setup vs execution)
 """
 
+import pytest
 from inference_endpoint.exceptions import (
     CLIError,
     ExecutionError,
@@ -40,35 +41,23 @@ class TestExceptionHierarchy:
     """
 
     def test_cli_error_base(self):
-        """Test CLIError is base exception."""
         err = CLIError("test")
         assert isinstance(err, Exception)
         assert str(err) == "test"
 
-    def test_input_validation_error_inherits_cli_error(self):
-        """Test InputValidationError inherits from CLIError."""
-        err = InputValidationError("validation failed")
+    @pytest.mark.parametrize(
+        "exc_class, msg",
+        [
+            (InputValidationError, "validation failed"),
+            (SetupError, "setup failed"),
+            (ExecutionError, "execution failed"),
+        ],
+    )
+    def test_inherits_cli_error(self, exc_class, msg):
+        err = exc_class(msg)
         assert isinstance(err, CLIError)
         assert isinstance(err, Exception)
-
-    def test_setup_error_inherits_cli_error(self):
-        """Test SetupError inherits from CLIError."""
-        err = SetupError("setup failed")
-        assert isinstance(err, CLIError)
-        assert isinstance(err, Exception)
-
-    def test_execution_error_inherits_cli_error(self):
-        """Test ExecutionError inherits from CLIError."""
-        err = ExecutionError("execution failed")
-        assert isinstance(err, CLIError)
-        assert isinstance(err, Exception)
-
-    def test_exception_messages(self):
-        """Test exception messages are preserved."""
-        msg = "Custom error message"
-        assert str(InputValidationError(msg)) == msg
-        assert str(SetupError(msg)) == msg
-        assert str(ExecutionError(msg)) == msg
+        assert str(err) == msg
 
     def test_exception_chaining(self):
         """Test exception chaining with 'from'."""

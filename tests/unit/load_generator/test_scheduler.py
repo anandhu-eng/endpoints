@@ -228,9 +228,9 @@ def test_poisson_scheduler_distribution(poisson_runtime_settings, target_qps):
     z_critical = 3.29  # 99.9% two-tailed
     margin_of_error = z_critical * (sample_std / math.sqrt(n))
     assert abs(sample_mean - expected_mean_s) < margin_of_error, (
-        f"Mean {sample_mean*1000:.3f}ms outside 99.9% CI: "
-        f"[{(expected_mean_s - margin_of_error)*1000:.3f}, "
-        f"{(expected_mean_s + margin_of_error)*1000:.3f}] ms"
+        f"Mean {sample_mean * 1000:.3f}ms outside 99.9% CI: "
+        f"[{(expected_mean_s - margin_of_error) * 1000:.3f}, "
+        f"{(expected_mean_s + margin_of_error) * 1000:.3f}] ms"
     )
 
     # Test 2: CV should be close to 1.0 (exponential property: std = mean)

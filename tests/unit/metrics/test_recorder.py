@@ -130,7 +130,7 @@ def test_event_row_to_insert_params(sample_uuids):
     assert params[3] == msgspec.json.encode(test_data)
 
 
-def test_event_row_to_insert_params_empty_data(sample_uuids):
+def test_event_row_insert_params_empty(sample_uuids):
     """Test EventRow.to_insert_params() with empty data field."""
     uuid1 = sample_uuids(1)
 
@@ -222,21 +222,21 @@ def get_EventRecorder(*args, **kwargs):
     return EventRecorder(*args, min_memory_req_bytes=128 * 1024 * 1024, **kwargs)
 
 
-def test_event_recorder_singleton_violation_create_multiple():
+def test_singleton_violation_create_dup():
     with get_EventRecorder():
         with pytest.raises(EventRecorderSingletonViolation):
             with get_EventRecorder():
                 pass
 
 
-def test_event_recorder_singleton_violation_close_non_active():
+def test_singleton_violation_close_other():
     with get_EventRecorder():
         other_rec = get_EventRecorder()
         with pytest.raises(EventRecorderSingletonViolation):
             other_rec.close()
 
 
-def test_event_recorder_singleton_violation_record_event_non_active(sample_uuids):
+def test_singleton_violation_record_other(sample_uuids):
     assert (
         EventRecorder.LIVE is None
     ), "Cannot run test - EventRecorder is active from previous test"
@@ -356,26 +356,33 @@ def test_shm_usage(sample_uuids):
 MemStat = namedtuple("MemStat", ["total", "used", "free"])
 
 
+@pytest.mark.parametrize(
+    "case_desc, mem_stat, min_req, expected_msg, extra_msg",
+    [
+        (
+            "total too small",
+            MemStat(total=64 * 1024 * 1024, used=0, free=64 * 1024 * 1024),
+            512 * 1024 * 1024,
+            "total space",
+            None,
+        ),
+        (
+            "free space insufficient",
+            MemStat(
+                total=1024 * 1024 * 1024, used=64 * 1024 * 1024, free=960 * 1024 * 1024
+            ),
+            1024 * 1024 * 1024,
+            "free space",
+            "960MB",
+        ),
+    ],
+)
 @patch("inference_endpoint.metrics.recorder.shutil.disk_usage")
-def test_shm_too_small(mock_run):
-    mock_run.return_value = MemStat(
-        total=64 * 1024 * 1024, used=0, free=64 * 1024 * 1024
-    )
-    with pytest.raises(MemoryError) as err:
-        EventRecorder(
-            min_memory_req_bytes=512 * 1024 * 1024
-        )  # Instantiate will not init the connection
-    assert "total space" in err.value.args[0]
-
-
-@patch("inference_endpoint.metrics.recorder.shutil.disk_usage")
-def test_shm_not_enough_space(mock_run):
-    mock_run.return_value = MemStat(
-        total=1024 * 1024 * 1024, used=64 * 1024 * 1024, free=960 * 1024 * 1024
-    )
-    with pytest.raises(MemoryError) as err:
-        EventRecorder(
-            min_memory_req_bytes=1024 * 1024 * 1024
-        )  # Instantiate will not init the connection
-    assert "free space" in err.value.args[0]
-    assert "960MB" in err.value.args[0]
+def test_shm_memory_error(
+    mock_run, case_desc, mem_stat, min_req, expected_msg, extra_msg
+):
+    mock_run.return_value = mem_stat
+    with pytest.raises(MemoryError, match=expected_msg) as err:
+        EventRecorder(min_memory_req_bytes=min_req)
+    if extra_msg:
+        assert extra_msg in err.value.args[0]
