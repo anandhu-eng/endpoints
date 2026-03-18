@@ -32,3 +32,4 @@ Use Python for both server and client:
 
 - Always kill the server process after the test
 - The whole run should be done in 40secs. If not something is wrong.
+- After reporting results, ring the terminal bell: `printf '\a'`
