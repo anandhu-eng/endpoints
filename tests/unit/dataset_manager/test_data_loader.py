@@ -85,7 +85,7 @@ def test_random_data_loader(range_ratio):
         assert (
             len(sample["input_tokens"]) > input_seq_length * range_ratio * 0.8
             and len(sample["input_tokens"]) <= input_seq_length * 1.2
-        ), f"Expected {input_seq_length * range_ratio * 0.8} to {input_seq_length * 0.2} input tokens, got {len(sample['input_tokens'])}"
+        ), f"Expected {input_seq_length * range_ratio * 0.8} to {input_seq_length * 1.2} input tokens, got {len(sample['input_tokens'])}"
 
         assert (
             len(sample["prompt"]) >= 1024 * range_ratio * 0.5
