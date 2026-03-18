@@ -87,7 +87,6 @@ class TestSGLangAdapterIntegration:
         # Verify result structure
         assert result.id == "sglang-test-1"
         assert "response_output" in dir(result)
-        # SGLang adapter returns str response_output (deprecated path)
         assert result.response_output is not None
         assert len(result.get_response_output_string()) > 0
 
@@ -133,7 +132,7 @@ class TestSGLangAdapterIntegration:
         # Verify result structure
         assert result.id == "sglang-test-stream-1"
         assert "response_output" in dir(result)
-        assert result.response_output is not None  # str path (deprecated)
+        assert result.response_output is not None
 
         assert result.metadata is not None
         assert "token_ids" in result.metadata
