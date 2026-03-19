@@ -84,10 +84,15 @@ def parse_result_summary(result_file: Path) -> dict | None:
 
 
 def collect_results(sweep_dir: Path) -> list[dict]:
+    def _concurrency_key(p: Path) -> int:
+        try:
+            return int(p.name.split("_")[1])
+        except (IndexError, ValueError):
+            return -1
+
     rows = []
     for concurrency_dir in sorted(
-        sweep_dir.glob("concurrency_*"),
-        key=lambda p: int(p.name.split("_")[1]),
+        sweep_dir.glob("concurrency_*"), key=_concurrency_key
     ):
         try:
             concurrency = int(concurrency_dir.name.split("_")[1])
@@ -319,7 +324,15 @@ def write_markdown(rows: list[dict], path: Path) -> None:
 
 
 def write_plots(rows: list[dict], path: Path) -> None:
-    import matplotlib.pyplot as plt
+    try:
+        import matplotlib
+        import matplotlib.ticker
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("matplotlib not installed; skipping plot generation.", file=sys.stderr)
+        return
 
     successful = [r for r in rows if r["status"] == "ok"]
     if not successful:
@@ -344,7 +357,9 @@ def write_plots(rows: list[dict], path: Path) -> None:
         ax.set_ylabel(ylabel)
         ax.set_xscale("log", base=2)
         ax.set_xticks(x)
-        ax.get_xaxis().set_major_formatter(plt.FuncFormatter(lambda v, _: str(int(v))))
+        ax.get_xaxis().set_major_formatter(
+            matplotlib.ticker.FuncFormatter(lambda v, _: str(int(v)))
+        )
         ax.legend(loc="upper left")
         ax.grid(True, which="both", linestyle="--", alpha=0.5)
 

@@ -89,6 +89,14 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_TIMEOUT_S,
         help="Per-run subprocess timeout in seconds (includes setup and teardown).",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help=(
+            "Stream benchmark output to the terminal in real time in addition "
+            "to saving it to the per-run log file. Useful for debugging failures."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -117,7 +125,7 @@ def render_config(
 
 
 def run_single_benchmark(
-    config: dict, timeout_seconds: int, log_path: Path
+    config: dict, timeout_seconds: int, log_path: Path, verbose: bool = False
 ) -> tuple[str, str]:
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".yaml", delete=False, dir="."
@@ -125,25 +133,48 @@ def run_single_benchmark(
         yaml.safe_dump(config, tmp, sort_keys=False)
         temp_config_path = Path(tmp.name)
 
+    cmd = [
+        "inference-endpoint",
+        "benchmark",
+        "from-config",
+        "-c",
+        str(temp_config_path),
+    ]
+
     try:
-        with log_path.open("w") as log_file:
-            result = subprocess.run(
-                [
-                    "inference-endpoint",
-                    "benchmark",
-                    "from-config",
-                    "-c",
-                    str(temp_config_path),
-                ],
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                text=True,
-                timeout=timeout_seconds,
-                check=False,
-            )
-        if result.returncode == 0:
+        if verbose:
+            with log_path.open("w") as log_file:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                )
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    print(line, end="", flush=True)
+                    log_file.write(line)
+                try:
+                    proc.wait(timeout=timeout_seconds)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    raise
+            returncode = proc.returncode
+        else:
+            with log_path.open("w") as log_file:
+                result = subprocess.run(
+                    cmd,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    timeout=timeout_seconds,
+                    check=False,
+                )
+            returncode = result.returncode
+
+        if returncode == 0:
             return "success", ""
-        return "failed", f"exit code {result.returncode}"
+        return "failed", f"exit code {returncode}, see {log_path}"
     except subprocess.TimeoutExpired:
         return "timeout", f"exceeded {timeout_seconds} seconds"
     finally:
@@ -209,8 +240,11 @@ def main() -> int:
             config=config,
             timeout_seconds=args.timeout_seconds,
             log_path=log_path,
+            verbose=args.verbose,
         )
         print(f"  status: {status}" + (f"  ({detail})" if detail else ""))
+        if status != "success" and not args.verbose:
+            print(f"  Re-run with --verbose to stream output, or inspect: {log_path}")
 
         summary_rows.append(
             {

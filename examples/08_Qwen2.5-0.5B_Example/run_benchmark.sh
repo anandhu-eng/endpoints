@@ -129,13 +129,13 @@ RETRY_COUNT=0
 
 # Different ready indicators for vLLM vs SGLang
 if [[ "$SERVER_TYPE" == "vllm" ]]; then
-    READY_PATTERN="Uvicorn running\|Application startup complete"
+    READY_PATTERN="Uvicorn running|Application startup complete"
 else
-    READY_PATTERN="Uvicorn running\|Server is ready"
+    READY_PATTERN="Uvicorn running|Server is ready"
 fi
 
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    if docker logs ${CONTAINER_NAME} 2>&1 | grep -q "$READY_PATTERN"; then
+    if docker logs ${CONTAINER_NAME} 2>&1 | grep -qE "$READY_PATTERN"; then
         echo "✅ Server is ready!"
         break
     fi

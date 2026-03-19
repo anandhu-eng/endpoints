@@ -1,36 +1,23 @@
 # Qwen2.5-0.5B-Instruct Benchmark Example
 
-This example benchmarks `Qwen/Qwen2.5-0.5B-Instruct` against either a vLLM or
-SGLang server. It is intended as a small-GPU example that works on typical
-8-16 GB cards.
+Benchmarks `Qwen/Qwen2.5-0.5B-Instruct` with offline (max-throughput) and online
+(concurrency sweep) load patterns. Designed for small GPUs (8–16 GB VRAM).
+
+Supported inference servers: **vLLM**, **SGLang**, **TRT-LLM**.
+
+---
 
 ## Requirements
 
 - Python 3.12+
-- Docker with NVIDIA GPU support
+- Docker with NVIDIA GPU support (`--runtime nvidia`)
 - NVIDIA GPU with at least 8 GB VRAM
 
-## Fastest Path
+---
 
-From the repo root:
+## Step 1 — Install and prepare dataset
 
-```bash
-# Offline benchmark with vLLM
-bash examples/08_Qwen2.5-0.5B_Example/run_benchmark.sh vllm offline
-
-# Offline benchmark with SGLang
-bash examples/08_Qwen2.5-0.5B_Example/run_benchmark.sh sglang offline
-
-# Online concurrency sweep
-bash examples/08_Qwen2.5-0.5B_Example/run_benchmark.sh vllm online
-```
-
-The script prepares the dataset, starts or reuses a container, waits for the
-server, and runs the benchmark.
-
-## Manual Flow
-
-If you do not want to use `run_benchmark.sh`, the minimum manual flow is:
+Run all commands from the **repository root**.
 
 ```bash
 python3.12 -m venv .venv
@@ -40,10 +27,18 @@ pip install -e ".[test]"
 python examples/08_Qwen2.5-0.5B_Example/prepare_dataset.py
 ```
 
-Start one server:
+This converts `tests/datasets/dummy_1k.pkl` into
+`examples/08_Qwen2.5-0.5B_Example/data/test_dataset.pkl`.
+
+---
+
+## Step 2 — Start the inference server
+
+Pick one backend. The server must be fully ready before running benchmarks.
+
+### vLLM (port 8000)
 
 ```bash
-# vLLM
 docker run --runtime nvidia --gpus all \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   -e PYTORCH_ALLOC_CONF=expandable_segments:True \
@@ -54,8 +49,11 @@ docker run --runtime nvidia --gpus all \
   vllm/vllm-openai:latest \
   --model Qwen/Qwen2.5-0.5B-Instruct \
   --gpu-memory-utilization 0.85
+```
 
-# SGLang
+### SGLang (port 30000)
+
+```bash
 docker run --runtime nvidia --gpus all --net host \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   --ipc=host \
@@ -70,51 +68,175 @@ docker run --runtime nvidia --gpus all --net host \
   --attention-backend flashinfer
 ```
 
-Run one benchmark:
+### TRT-LLM (port 8000)
 
 ```bash
-# vLLM offline
-inference-endpoint benchmark from-config \
-  -c examples/08_Qwen2.5-0.5B_Example/offline_qwen_benchmark.yaml
+docker run --runtime nvidia --gpus all \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  -p 8000:8000 \
+  --ipc=host \
+  --name trtllm-qwen \
+  -d \
+  nvcr.io/nvidia/tritonserver:latest \
+  # Add your TRT-LLM engine launch arguments here
+```
 
-# SGLang offline
-inference-endpoint benchmark from-config \
-  -c examples/08_Qwen2.5-0.5B_Example/sglang_offline_qwen_benchmark.yaml
+> **Note:** No pre-built TRT-LLM config is provided. Use
+> `examples/08_Qwen2.5-0.5B_Example/online_qwen_benchmark.yaml` as a template and
+> point `endpoint_config.endpoints` at `http://localhost:8000`.
 
-# vLLM online sweep
+---
+
+## Step 3 — Wait for the server to be ready
+
+Poll until the health endpoint responds:
+
+```bash
+# vLLM / TRT-LLM (port 8000)
+until curl -sf http://localhost:8000/v1/models > /dev/null; do
+  echo "Waiting for server..."; sleep 5
+done
+echo "Server ready."
+
+# SGLang (port 30000)
+until curl -sf http://localhost:30000/health > /dev/null; do
+  echo "Waiting for server..."; sleep 5
+done
+echo "Server ready."
+```
+
+---
+
+## Step 4 — Run the concurrency sweep
+
+Choose the config that matches your server. The sweep script overrides
+`load_pattern` and `report_dir` for each concurrency level, leaving all other
+settings (model, dataset, endpoint) from the config file.
+
+```bash
+# vLLM
 python scripts/concurrency_sweep/run.py \
   --config examples/08_Qwen2.5-0.5B_Example/online_qwen_benchmark.yaml
 
-# SGLang online sweep
+# SGLang
 python scripts/concurrency_sweep/run.py \
   --config examples/08_Qwen2.5-0.5B_Example/sglang_online_qwen_benchmark.yaml
+
+# TRT-LLM (use the vLLM config or a custom one pointing at port 8000)
+python scripts/concurrency_sweep/run.py \
+  --config examples/08_Qwen2.5-0.5B_Example/online_qwen_benchmark.yaml
 ```
 
-## Files
+**Common options:**
 
-- `offline_qwen_benchmark.yaml`: vLLM offline benchmark
-- `online_qwen_benchmark.yaml`: vLLM online concurrency sweep
-- `sglang_offline_qwen_benchmark.yaml`: SGLang offline benchmark
-- `sglang_online_qwen_benchmark.yaml`: SGLang online concurrency sweep
-- `prepare_dataset.py`: converts `tests/datasets/dummy_1k.pkl` into the example dataset
-- `run_benchmark.sh`: wrapper that automates dataset prep, container startup, and benchmark execution
+| Flag | Default | Description |
+|---|---|---|
+| `--concurrency N [N ...]` | `1 2 4 8 16 32 64 128 256 512 1024` | Concurrency levels to test |
+| `--duration-ms MS` | `600000` (10 min) | Duration per run |
+| `--output-dir DIR` | from `report_dir` in config | Root directory for sweep output |
+| `--timeout-seconds S` | `720` (12 min) | Per-run subprocess timeout |
+| `--verbose` | off | Stream output live to the terminal (useful for debugging) |
 
-## Results
-
-- vLLM offline: `results/qwen_offline_benchmark/`
-- vLLM online: `results/qwen_online_benchmark/concurrency_sweep/`
-- SGLang offline: `results/qwen_sglang_offline_benchmark/`
-- SGLang online: `results/qwen_sglang_online_benchmark/concurrency_sweep/`
-
-To summarize an online sweep:
+Example — quick 3-minute sweep at a few concurrency levels:
 
 ```bash
-python scripts/concurrency_sweep/summarize.py \
-  results/qwen_online_benchmark/concurrency_sweep/
+python scripts/concurrency_sweep/run.py \
+  --config examples/08_Qwen2.5-0.5B_Example/online_qwen_benchmark.yaml \
+  --concurrency 1 4 16 64 \
+  --duration-ms 180000 \
+  --verbose
 ```
 
-## Notes
+Results land in subdirectories under the config's `report_dir`:
 
-- The online sweep defaults to `1 2 4 8 16 32 64 128 256 512 1024`.
-- Use `scripts/concurrency_sweep/run.py --concurrency ... --duration-ms ...` to shorten or customize the sweep.
-- If vLLM runs out of memory at higher concurrency, lower `--gpu-memory-utilization`.
+```
+results/qwen_online_benchmark/concurrency_sweep/
+  concurrency_1/   benchmark.log   result_summary.json
+  concurrency_4/   benchmark.log   result_summary.json
+  ...
+  summary.json     summary.csv
+```
+
+If a run fails, check the per-run log:
+
+```bash
+cat results/qwen_online_benchmark/concurrency_sweep/concurrency_64/benchmark.log
+```
+
+---
+
+## Step 5 — Summarize results and generate plots
+
+```bash
+# vLLM
+python scripts/concurrency_sweep/summarize.py \
+  results/qwen_online_benchmark/concurrency_sweep/
+
+# SGLang
+python scripts/concurrency_sweep/summarize.py \
+  results/qwen_sglang_online_benchmark/concurrency_sweep/
+```
+
+This prints formatted tables to stdout and writes three files into the sweep
+directory:
+
+| File | Contents |
+|---|---|
+| `metrics_summary.csv` | All metrics in CSV form |
+| `metrics_summary.md` | Markdown tables with throughput, latency, TTFT, TPOT |
+| `metrics_summary.png` | Line plots of TPS, TTFT P99, and TPOT P50 vs concurrency |
+
+Pass `--no-save` to print tables only without writing files.
+
+---
+
+## Step 6 — Stop the server
+
+```bash
+docker stop vllm-qwen    # or sglang-qwen / trtllm-qwen
+docker rm   vllm-qwen
+```
+
+---
+
+## Offline (max-throughput) benchmark
+
+For a single offline run (no sweep):
+
+```bash
+# vLLM
+inference-endpoint benchmark from-config \
+  -c examples/08_Qwen2.5-0.5B_Example/offline_qwen_benchmark.yaml
+
+# SGLang
+inference-endpoint benchmark from-config \
+  -c examples/08_Qwen2.5-0.5B_Example/sglang_offline_qwen_benchmark.yaml
+```
+
+Results: `results/qwen_offline_benchmark/` or `results/qwen_sglang_offline_benchmark/`.
+
+---
+
+## Automated wrapper
+
+`run_benchmark.sh` automates Steps 2–4 (dataset prep, container start, benchmark):
+
+```bash
+bash examples/08_Qwen2.5-0.5B_Example/run_benchmark.sh vllm offline
+bash examples/08_Qwen2.5-0.5B_Example/run_benchmark.sh vllm online
+bash examples/08_Qwen2.5-0.5B_Example/run_benchmark.sh sglang offline
+bash examples/08_Qwen2.5-0.5B_Example/run_benchmark.sh sglang online
+```
+
+---
+
+## Config files
+
+| File | Server | Mode |
+|---|---|---|
+| `offline_qwen_benchmark.yaml` | vLLM (`:8000`) | Offline |
+| `online_qwen_benchmark.yaml` | vLLM (`:8000`) | Online sweep |
+| `sglang_offline_qwen_benchmark.yaml` | SGLang (`:30000`) | Offline |
+| `sglang_online_qwen_benchmark.yaml` | SGLang (`:30000`) | Online sweep |
+| `prepare_dataset.py` | — | Converts `dummy_1k.pkl` to example dataset |
+| `run_benchmark.sh` | vLLM / SGLang | Automated wrapper |
