@@ -207,6 +207,35 @@ class TestShopifyProductCatalogueGenerate:
                     force=True,
                 )
 
+    def test_generate_uses_load_from_disk_when_cache_dir_exists(
+        self, tmp_path: Path, mock_hf_dataset: list[dict]
+    ) -> None:
+        """When cache_dir exists, load_from_huggingface uses load_from_disk, not load_dataset."""
+        cache_dir = tmp_path / "hf_cache" / "shopify_product_catalogue" / "train"
+        cache_dir.mkdir(parents=True)
+
+        with (
+            patch(
+                "inference_endpoint.dataset_manager.dataset.load_from_disk",
+                return_value=mock_hf_dataset,
+            ) as mock_load_from_disk,
+            patch(
+                "inference_endpoint.dataset_manager.dataset.load_dataset",
+            ) as mock_load_dataset,
+        ):
+            df = ShopifyProductCatalogue.generate(
+                datasets_dir=tmp_path,
+                split=["train+test"],
+                force=True,
+                cache_dir=cache_dir,
+            )
+
+        mock_load_from_disk.assert_called_once()
+        assert mock_load_from_disk.call_args[0][0] == str(cache_dir)
+        mock_load_dataset.assert_not_called()
+        assert list(df.columns) == ShopifyProductCatalogue.COLUMN_NAMES
+        assert len(df) == 2
+
 
 class TestShopifyMultimodalFormatter:
     """Tests for ShopifyMultimodalFormatter transform."""

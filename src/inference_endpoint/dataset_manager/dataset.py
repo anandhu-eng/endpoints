@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 import pandas as pd
-from datasets import Dataset as HFDataset, concatenate_datasets, load_dataset, load_from_disk
+from datasets import Dataset as HFDataset, load_dataset, load_from_disk
 
 from ..config.schema import APIType, ModelParams
 from .transforms import Transform, apply_transforms, get_transforms_for_api_type
@@ -260,17 +260,8 @@ def load_from_huggingface(
 
     if cache_dir is not None and cache_dir.exists():
         try:
+            # load_from_disk returns Dataset or DatasetDict (no split kwarg), subscripting to get split is not supported.
             ds = load_from_disk(str(cache_dir), **cache_options)
-            # load_from_disk returns Dataset or DatasetDict (no split kwarg)
-            if hasattr(ds, "keys"):
-                # DatasetDict: extract split(s)
-                if "+" in split:
-                    split_names = [s.strip() for s in split.split("+")]
-                    sub_datasets = [ds[s] for s in split_names]
-                    ds = concatenate_datasets(sub_datasets)
-                else:
-                    ds = ds[split]
-            # else: single Dataset, use as-is
             return ds
         except Exception as e:
             logger.warning(f"Error loading dataset from cache: {e}")
