@@ -19,7 +19,7 @@ warmup:
   num_samples: 64
   input_seq_length: 256
   output_seq_length: 64
-  range_ratio: 0.9
+  input_range_ratio: 0.9
   random_seed: 42
 ```
 
@@ -44,4 +44,4 @@ server and run the same commands.
 - `num_samples`: use enough requests to reach a steady state
 - `input_seq_length`: match the typical prompt length of the workload
 - `output_seq_length`: match the expected response length
-- `range_ratio`: use values below `1.0` to add light ISL variation
+- `input_range_ratio`: use values below `1.0` to add light ISL variation

@@ -322,7 +322,7 @@ class BenchmarkSession:
             report_dir: The path to save the report to. If None, no report will be saved.
             tokenizer_override: The tokenizer to use for the session. If None, a tokenizer will be automatically selected
                                 based on the model name in the runtime settings.
-            dump_events_csv: Whether to dump the events to a CSV file. Only use for debugging
+            dump_events_log: Whether to dump the events to a JSONL file. Only use for debugging
                              purposes, as the events database can get quite large.
 
         Returns:
