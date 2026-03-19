@@ -23,35 +23,16 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict
 from tqdm import tqdm
 
 from ...dataset import Dataset, load_from_huggingface
 
+from .metadata import ProductMetadata
+from . import presets
+
 logger = getLogger(__name__)
 
 EXT_TO_FORMAT = {"": "JPEG", ".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG"}
-
-
-class ProductMetadata(BaseModel):
-    """JSON format for expected VLM responses (matches MLCommons Q3VL schema).
-
-    Reference: https://github.com/mlcommons/inference/blob/master/multimodal/qwen3-vl/src/mlperf_inf_mm_q3vl/schema.py
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    category: str
-    """Complete category path, e.g. 'Clothing & Accessories > Clothing > Shirts > Polo Shirts'."""
-
-    brand: str
-    """Brand of the product, e.g. 'giorgio armani'."""
-
-    is_secondhand: bool
-    """True if second-hand, False otherwise."""
-
-
-from . import presets
 
 
 def _process_sample_to_row(sample: dict[str, Any]) -> dict[str, Any]:

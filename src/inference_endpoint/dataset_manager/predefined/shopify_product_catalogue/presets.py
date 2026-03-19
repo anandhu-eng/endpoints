@@ -20,7 +20,7 @@ from typing import Any
 
 from inference_endpoint.dataset_manager.transforms import RowProcessor, Transform
 
-from . import ProductMetadata
+from .metadata import ProductMetadata
 
 
 class ShopifyMultimodalFormatter(RowProcessor):
