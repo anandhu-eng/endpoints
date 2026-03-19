@@ -1,6 +1,6 @@
 # Running Endpoints with Qwen3-VL-235B-A22B on Shopify Product Catalogue
 
-This document describes how to perform MLPerf Q3VL benchmarking using the inference endpoints with [Qwen3-VL-235B-A22B-instruct](https://huggingface.co/Qwen/Qwen3-VL-235B-A22B-Instruct) model and [Shopify's Product Catalogue dataset](https://huggingface.co/datasets/Shopify/product-catalogue) for multimodal product taxonomy classification. 
+This document describes how to perform MLPerf Q3VL benchmarking using the inference endpoints with [Qwen3-VL-235B-A22B-instruct](https://huggingface.co/Qwen/Qwen3-VL-235B-A22B-Instruct) model and [Shopify's Product Catalogue dataset](https://huggingface.co/datasets/Shopify/product-catalogue) for multimodal product taxonomy classification.
 
 ## Get Dataset
 

@@ -24,7 +24,8 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 import pandas as pd
-from datasets import Dataset as HFDataset, load_dataset, load_from_disk
+from datasets import Dataset as HFDataset
+from datasets import load_dataset, load_from_disk
 
 from ..config.schema import APIType, ModelParams
 from .transforms import Transform, apply_transforms, get_transforms_for_api_type
@@ -265,9 +266,7 @@ def load_from_huggingface(
             return ds
         except Exception as e:
             logger.warning(f"Error loading dataset from cache: {e}")
-    ds = load_dataset(
-        dataset_path, dataset_name, split=split, **load_options
-    )
+    ds = load_dataset(dataset_path, dataset_name, split=split, **load_options)
 
     if cache_dir is not None:
         try:

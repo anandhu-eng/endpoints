@@ -65,7 +65,6 @@ from inference_endpoint.dataset_manager.dataset import Dataset
 from inference_endpoint.dataset_manager.factory import DataLoaderFactory
 from inference_endpoint.endpoint_client.config import HTTPClientConfig
 from inference_endpoint.endpoint_client.cpu_affinity import (
-    UnsupportedPlatformError,
     pin_loadgen,
 )
 from inference_endpoint.endpoint_client.http_client import HTTPEndpointClient

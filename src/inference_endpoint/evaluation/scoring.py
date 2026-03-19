@@ -28,7 +28,7 @@ from typing import ClassVar
 import msgspec.json
 import numpy as np
 import pandas as pd
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 from tqdm import tqdm
 
 try:
