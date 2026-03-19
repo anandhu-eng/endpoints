@@ -18,6 +18,7 @@
 import base64
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pandas as pd
@@ -185,7 +186,7 @@ class TestShopifyProductCatalogueGenerate:
 
     def test_generate_raises_when_product_image_missing(self, tmp_path: Path) -> None:
         """Raises ValueError when product_image is missing from a row."""
-        bad_dataset = [
+        bad_dataset: list[dict[str, Any]] = [
             {
                 "product_title": "No Image",
                 "product_description": "",
