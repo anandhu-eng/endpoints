@@ -45,24 +45,15 @@ def _process_sample_to_row(sample: dict[str, Any]) -> dict[str, Any]:
     if image is None:
         raise ValueError("product_image is missing from dataset row")
 
-    if hasattr(image, "save") and hasattr(image, "format"):
-        image_file = BytesIO()
-        image_format = image.format or "JPEG"
-        image.save(image_file, format=image_format)
-        image_bytes = image_file.getvalue()
-    elif isinstance(image, dict) and "bytes" in image:
-        image_bytes = image["bytes"]
-        ext = Path(image.get("path", "")).suffix.lower()
-        image_format = EXT_TO_FORMAT.get(ext, "JPEG")
-    else:
-        raise ValueError(
-            "product_image must be PIL Image or dict with 'bytes' and 'path'"
-        )
+    image_file = BytesIO()
+    image_format = image.format or "JPEG"
+    image.save(image_file, format=image_format)
+    image_bytes = image_file.getvalue()
+
+
 
     image_base64 = base64.b64encode(image_bytes).decode("utf-8")
     categories = sample.get("potential_product_categories", [])
-    if hasattr(categories, "tolist"):
-        categories = categories.tolist()
 
     return {
         "product_title": sample.get("product_title", ""),
