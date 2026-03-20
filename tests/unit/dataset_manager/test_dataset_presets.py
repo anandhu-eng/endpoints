@@ -98,7 +98,16 @@ class TestCNNDailyMailPresets:
     def test_llama3_8b_sglang_transforms_apply(self, llama3_8b_sglang_transformed):
         """Test that llama3_8b_sglang transforms apply without errors."""
         assert llama3_8b_sglang_transformed is not None
+        # SGLang preset should still provide a prompt column
         assert "prompt" in llama3_8b_sglang_transformed.columns
+        # Key output for SGLang preset is tokenized input
+        assert "input_tokens" in llama3_8b_sglang_transformed.columns
+        input_tokens = llama3_8b_sglang_transformed["input_tokens"].iloc[0]
+        assert isinstance(input_tokens, list)
+        assert len(input_tokens) > 0
+        assert all(isinstance(token, int) for token in input_tokens)
+        # harmonized_column is expected to be None for this preset
+        assert "harmonized_prompt" not in llama3_8b_sglang_transformed.columns
 
 
 class TestAIME25Presets:
