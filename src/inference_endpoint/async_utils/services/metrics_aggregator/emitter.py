@@ -20,6 +20,7 @@ from __future__ import annotations
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import TextIO
 
 import msgspec
 
@@ -58,12 +59,14 @@ class JsonlMetricEmitter(MetricEmitter):
 
     def __init__(self, file_path: Path, flush_interval: int = 100) -> None:
         self._file_path = file_path.with_suffix(".jsonl")
-        self._file = self._file_path.open("w")
+        self._file: TextIO | None = self._file_path.open("w")
         self._encoder = msgspec.json.Encoder()
         self._flush_interval = flush_interval
         self._n_since_flush = 0
 
     def emit(self, sample_uuid: str, metric_name: str, value: int | float) -> None:
+        if self._file is None:
+            return
         record = _MetricRecord(
             sample_uuid=sample_uuid,
             metric_name=metric_name,
@@ -89,4 +92,4 @@ class JsonlMetricEmitter(MetricEmitter):
                 # File may already be closed or I/O error on close (e.g. disk full).
                 pass
             finally:
-                self._file = None  # type: ignore[assignment]
+                self._file = None

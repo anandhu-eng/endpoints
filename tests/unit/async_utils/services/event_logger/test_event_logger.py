@@ -117,7 +117,7 @@ def _make_stub(*args, **kwargs) -> tuple[StubEventLoggerService, list[FakeWriter
 
 @pytest.mark.unit
 class TestWriteDispatch:
-    @pytest.mark.asyncio(mode="strict")
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "case_desc, records",
         [
@@ -146,14 +146,14 @@ class TestWriteDispatch:
         for writer in writers:
             assert writer.written == records
 
-    @pytest.mark.asyncio(mode="strict")
+    @pytest.mark.asyncio
     async def test_empty_batch(self):
         service, writers = _make_stub()
         await service.process([])
         for writer in writers:
             assert len(writer.written) == 0
 
-    @pytest.mark.asyncio(mode="strict")
+    @pytest.mark.asyncio
     async def test_multiple_batches_accumulate(self):
         service, writers = _make_stub()
         await service.process([_record(SampleEventType.ISSUED, uuid="s1")])
@@ -169,7 +169,7 @@ class TestWriteDispatch:
 
 @pytest.mark.unit
 class TestShutdownBehavior:
-    @pytest.mark.asyncio(mode="strict")
+    @pytest.mark.asyncio
     async def test_session_ended_triggers_flush_and_close(self):
         service, writers = _make_stub()
         await service.process([_record(SessionEventType.ENDED, ts=100)])
@@ -177,7 +177,7 @@ class TestShutdownBehavior:
             assert writer.flush_count == 1
             assert writer.closed
 
-    @pytest.mark.asyncio(mode="strict")
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "case_desc, trailing_record",
         [
@@ -202,13 +202,13 @@ class TestShutdownBehavior:
             assert len(writer.written) == 1
             assert writer.written[0].event_type == SessionEventType.ENDED
 
-    @pytest.mark.asyncio(mode="strict")
+    @pytest.mark.asyncio
     async def test_writers_cleared_after_shutdown(self):
         service, _ = _make_stub()
         await service.process([_record(SessionEventType.ENDED)])
         assert service.writers == []
 
-    @pytest.mark.asyncio(mode="strict")
+    @pytest.mark.asyncio
     async def test_records_before_ended_are_written(self):
         service, writers = _make_stub()
         await service.process(
@@ -235,7 +235,7 @@ class TestShutdownBehavior:
 
 @pytest.mark.unit
 class TestClose:
-    @pytest.mark.asyncio(mode="strict")
+    @pytest.mark.asyncio
     async def test_close_closes_all_writers(self):
         service, writers = _make_stub()
         service.close()
@@ -243,7 +243,7 @@ class TestClose:
             assert writer.closed
         assert service.writers == []
 
-    @pytest.mark.asyncio(mode="strict")
+    @pytest.mark.asyncio
     async def test_close_idempotent(self):
         service, _ = _make_stub()
         service.close()
@@ -257,7 +257,7 @@ class TestClose:
 
 @pytest.mark.unit
 class TestIntegrationWithRealWriters:
-    @pytest.mark.asyncio(mode="strict")
+    @pytest.mark.asyncio
     async def test_jsonl_writer_integration(self, tmp_path):
         """EventLoggerService with a real JSONLWriter persists records to disk."""
         writer = JSONLWriter(tmp_path / "events", flush_interval=1)
@@ -281,7 +281,7 @@ class TestIntegrationWithRealWriters:
         assert records[1].event_type == SampleEventType.RECV_FIRST
         assert records[2].event_type == SampleEventType.COMPLETE
 
-    @pytest.mark.asyncio(mode="strict")
+    @pytest.mark.asyncio
     async def test_sql_writer_integration(self, tmp_path):
         """EventLoggerService with a real SQLWriter persists records to SQLite."""
         from sqlalchemy import create_engine, select
@@ -312,7 +312,7 @@ class TestIntegrationWithRealWriters:
             ]
         engine.dispose()
 
-    @pytest.mark.asyncio(mode="strict")
+    @pytest.mark.asyncio
     async def test_dual_writer_integration(self, tmp_path):
         """Both JSONL and SQL writers receive the same records."""
         jsonl_writer = JSONLWriter(tmp_path / "events", flush_interval=1)
@@ -343,7 +343,7 @@ class TestIntegrationWithRealWriters:
             assert rows[0].sample_uuid == "dual-1"
         engine.dispose()
 
-    @pytest.mark.asyncio(mode="strict")
+    @pytest.mark.asyncio
     async def test_ended_closes_real_writers(self, tmp_path):
         """ENDED triggers close on real writers, flushing data to disk."""
         jsonl_writer = JSONLWriter(tmp_path / "events", flush_interval=100)
@@ -361,7 +361,7 @@ class TestIntegrationWithRealWriters:
         lines = [line for line in content.split("\n") if line]
         assert len(lines) == 2
 
-    @pytest.mark.asyncio(mode="strict")
+    @pytest.mark.asyncio
     async def test_events_after_ended_not_persisted_to_jsonl(self, tmp_path):
         """All events after ENDED (including errors) are dropped from JSONL."""
         writer = JSONLWriter(tmp_path / "events", flush_interval=100)
@@ -380,7 +380,7 @@ class TestIntegrationWithRealWriters:
         assert len(lines) == 1
         assert "LateError" not in lines[0]
 
-    @pytest.mark.asyncio(mode="strict")
+    @pytest.mark.asyncio
     async def test_full_lifecycle(self, tmp_path):
         """Full session lifecycle: started -> samples -> ended."""
         writer = JSONLWriter(tmp_path / "events", flush_interval=1)
@@ -418,7 +418,7 @@ class TestIntegrationWithRealWriters:
 
 @pytest.mark.unit
 class TestEdgeCases:
-    @pytest.mark.asyncio(mode="strict")
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "case_desc, event_enum, make_record",
         [
@@ -439,7 +439,7 @@ class TestEdgeCases:
         for writer in writers:
             assert len(writer.written) == len(list(event_enum))
 
-    @pytest.mark.asyncio(mode="strict")
+    @pytest.mark.asyncio
     async def test_ended_only_triggers_once(self):
         """Multiple ENDED in a batch: shutdown path runs once, second ENDED is dropped."""
         service, writers = _make_stub()

@@ -17,6 +17,7 @@
 
 import argparse
 import asyncio
+from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 
 from inference_endpoint.async_utils.loop_manager import LoopManager
@@ -63,27 +64,31 @@ async def main() -> None:
     shutdown_event = asyncio.Event()
     loop = LoopManager().default_loop
 
-    pool = None
+    # Using ternary operator causes errors in MyPy object type coalescing
+    # (coalesces to 'object' not 'AbstractContextManager[TokenizePool | None]')
     if args.tokenizer:
-        pool = TokenizePool(args.tokenizer, n_workers=args.tokenizer_workers)
+        pool_cm: AbstractContextManager[TokenizePool | None] = TokenizePool(
+            args.tokenizer, n_workers=args.tokenizer_workers
+        )
+    else:
+        pool_cm = nullcontext()
 
-    try:
-        with ManagedZMQContext.scoped(socket_dir=args.metrics_dir.parent) as zmq_ctx:
-            emitter = JsonlMetricEmitter(metrics_file, flush_interval=100)
-            aggregator = MetricsAggregatorService(
-                args.socket_address,
-                zmq_ctx,
-                loop,
-                topics=None,
-                emitter=emitter,
-                tokenize_pool=pool,
-                shutdown_event=shutdown_event,
-            )
-            loop.call_soon_threadsafe(aggregator.start)
-            await shutdown_event.wait()
-    finally:
-        if pool is not None:
-            pool.close()
+    with (
+        pool_cm as pool,
+        ManagedZMQContext.scoped(socket_dir=args.metrics_dir.parent) as zmq_ctx,
+    ):
+        emitter = JsonlMetricEmitter(metrics_file, flush_interval=100)
+        aggregator = MetricsAggregatorService(
+            args.socket_address,
+            zmq_ctx,
+            loop,
+            topics=None,
+            emitter=emitter,
+            tokenize_pool=pool,
+            shutdown_event=shutdown_event,
+        )
+        loop.call_soon_threadsafe(aggregator.start)
+        await shutdown_event.wait()
 
 
 if __name__ == "__main__":
