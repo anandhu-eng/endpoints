@@ -83,6 +83,7 @@ class TestCNNDailyMailPresets:
         # The original article should be embedded in the prompt
         assert sample_cnn_data["article"][0] in prompt
 
+    @pytest.mark.slow
     def test_llama3_8b_sglang_preset_instantiation(self):
         """Test that llama3_8b_sglang preset can be instantiated."""
         transforms = CNNDailyMail.PRESETS.llama3_8b_sglang()
@@ -266,6 +267,7 @@ class TestOpenOrcaPresets:
         assert transforms is not None
         assert len(transforms) > 0
 
+    @pytest.mark.slow
     def test_llama2_70b_transforms_apply(self, sample_openorca_data):
         """Test that llama2_70b transforms apply without errors."""
         transforms = OpenOrca.PRESETS.llama2_70b()
