@@ -17,13 +17,13 @@ pytest tests/unit/dataset_manager/test_dataset_presets.py -m "not slow" -v
 
 ## Preset Coverage
 
-| Dataset | Presets | Tests |
-|---------|---------|-------|
-| CNNDailyMail | `llama3_8b`, `llama3_8b_sglang` | 6 |
-| AIME25 | `gptoss` | 3 |
-| GPQA | `gptoss` | 3 |
-| LiveCodeBench | `gptoss` | 3 |
-| OpenOrca | `llama2_70b` | 3 |
+| Dataset       | Presets                         | Tests |
+| ------------- | ------------------------------- | ----- |
+| CNNDailyMail  | `llama3_8b`, `llama3_8b_sglang` | 6     |
+| AIME25        | `gptoss`                        | 3     |
+| GPQA          | `gptoss`                        | 3     |
+| LiveCodeBench | `gptoss`                        | 3     |
+| OpenOrca      | `llama2_70b`                    | 3     |
 
 ## Adding Tests for New Presets
 
@@ -80,12 +80,14 @@ def test_my_preset_transforms_apply(self, transformed_data):
 ## Test Scope
 
 ✅ **Tests verify:**
+
 - Preset instantiation
 - Transform application without errors
 - Required output columns exist
 - Data is properly transformed
 
 ❌ **Tests do NOT verify:**
+
 - Model inference accuracy
 - API endpoint compatibility
 - Throughput/latency metrics

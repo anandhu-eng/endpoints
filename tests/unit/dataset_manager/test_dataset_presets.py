@@ -27,7 +27,6 @@ Instead, they use minimal dummy datasets with the required columns.
 
 import pandas as pd
 import pytest
-
 from inference_endpoint.dataset_manager.predefined.aime25 import AIME25
 from inference_endpoint.dataset_manager.predefined.cnndailymail import CNNDailyMail
 from inference_endpoint.dataset_manager.predefined.gpqa import GPQA
@@ -227,7 +226,9 @@ class TestLiveCodeBenchPresets:
         assert gptoss_transformed is not None
         assert "prompt" in gptoss_transformed.columns
 
-    def test_gptoss_format_includes_code_delimiters(self, gptoss_transformed, sample_lcb_data):
+    def test_gptoss_format_includes_code_delimiters(
+        self, gptoss_transformed, sample_lcb_data
+    ):
         """Test that gptoss format includes code delimiters."""
         prompt = gptoss_transformed["prompt"][0]
         # Should include ```python delimiters for code
@@ -278,11 +279,18 @@ class TestOpenOrcaPresets:
         assert "prompt" in llama2_70b_transformed.columns
         assert "system" in llama2_70b_transformed.columns
 
-    def test_llama2_70b_remaps_columns(self, llama2_70b_transformed, sample_openorca_data):
+    def test_llama2_70b_remaps_columns(
+        self, llama2_70b_transformed, sample_openorca_data
+    ):
         """Test that llama2_70b correctly remaps question->prompt and system_prompt->system."""
         # After transformation, original columns should be renamed
         assert "prompt" in llama2_70b_transformed.columns
         assert "system" in llama2_70b_transformed.columns
         # Data should be preserved in renamed columns
-        assert llama2_70b_transformed["prompt"][0] == sample_openorca_data["question"][0]
-        assert llama2_70b_transformed["system"][0] == sample_openorca_data["system_prompt"][0]
+        assert (
+            llama2_70b_transformed["prompt"][0] == sample_openorca_data["question"][0]
+        )
+        assert (
+            llama2_70b_transformed["system"][0]
+            == sample_openorca_data["system_prompt"][0]
+        )
