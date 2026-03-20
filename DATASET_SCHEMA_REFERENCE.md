@@ -17,6 +17,10 @@ Quick reference for the columns and transformations of each preset dataset.
 
 ## Detailed Schema Definitions
 
+When adding a new dataset support, it's recommended to add it to [`predefined`](src/inference_endpoint/dataset_manager/predefined), defining the presets, and a [`Dataset`](src/inference_endpoint/dataset_manager/dataset.py) subclass which generates and/or saves the preprocessed dataset on disk.
+
+You can find examples in [src/inference_endpoint/dataset_manager/predefined](src/inference_endpoint/dataset_manager/predefined). Some existing examples are illustrated below.
+
 ### CNNDailyMail Dataset
 
 #### Preset: `llama3_8b`
@@ -261,10 +265,10 @@ pd.DataFrame({
 
 ## Creating Test Data for New Presets
 
-When adding tests for a new preset, follow this pattern:
+When adding tests for a new preset, follow this pattern (You may choose to extend [tests/unit/dataset_manager/test_dataset_presets.py](tests/unit/dataset_manager/test_dataset_presets.py)):
 
 1. **Identify input columns** from the preset's `UserPromptFormatter` or other transforms
-2. **Create minimal fixture** with required columns:
+2. **Create minimal fixture** with required columns (See **Sample test data** in the examples above):
    ```python
    @pytest.fixture
    def sample_data(self):
@@ -293,34 +297,6 @@ When adding tests for a new preset, follow this pattern:
        result = apply_transforms(sample_data, transforms)
        assert "formatting_characteristic" in result["output_col"]
    ```
-
----
-
-## Testing Transforms Without Datasets
-
-To test transforms without downloading full datasets, create minimal DataFrames:
-
-```python
-import pandas as pd
-from inference_endpoint.dataset_manager.transforms import apply_transforms
-from inference_endpoint.dataset_manager.predefined.cnndailymail import CNNDailyMail
-
-# Minimal sample data
-data = pd.DataFrame({
-    "article": ["Short article text"],
-    "highlights": ["Summary"],
-})
-
-# Get preset
-transforms = CNNDailyMail.PRESETS.llama3_8b_sglang()
-
-# Apply
-result = apply_transforms(data, transforms)
-
-# Verify
-print("Columns:", result.columns.tolist())
-print("Prompt length:", len(result["prompt"][0]))
-```
 
 ---
 
@@ -353,8 +329,8 @@ pytest -k "transforms_apply" tests/unit/dataset_manager/test_dataset_presets.py 
 
 ## Column Name Conventions
 
-### Prompt-like columns (can be fuzzy remapped)
-- `prompt` - Main input to model
+### Prompt-like columns (can be fuzzy remapped from original dataset column name)
+- `prompt` - Main input to model (required in the output of presets if using openai api type)
 - `user_prompt` - User's query
 - `question` - Question to answer
 - `input` - Generic input
@@ -367,7 +343,7 @@ pytest -k "transforms_apply" tests/unit/dataset_manager/test_dataset_presets.py 
 - `system_prompt` - System instruction
 - `instruction` - Task instruction
 
-### Output columns (from models)
+### Output columns (usually found in dataset, e.g huggingface dataset provides these)
 - `response` - Model response
 - `answer` - Answer to question
 - `highlights` - Text summary
