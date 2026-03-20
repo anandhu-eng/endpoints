@@ -30,7 +30,6 @@ from inference_endpoint.async_utils.loop_manager import LoopManager
 from inference_endpoint.async_utils.transport.zmq.context import ManagedZMQContext
 from inference_endpoint.async_utils.transport.zmq.pubsub import ZmqEventRecordSubscriber
 from inference_endpoint.core.record import (
-    ErrorEventType,
     EventRecord,
     SessionEventType,
 )
@@ -46,18 +45,12 @@ _WRITER_REGISTRY: dict[str, type[RecordWriter]] = {
 }
 
 
-def _is_error_event(record: EventRecord) -> bool:
-    """True if the record is an error event (should not be dropped after ENDED)."""
-    return isinstance(record.event_type, ErrorEventType)
-
-
 class EventLoggerService(ZmqEventRecordSubscriber):
     """Event logger service for logging event records.
 
-    When SessionEventType.ENDED is received (topic 'session.ended'), the service stops
-    accepting further events (except Error events), closes writers, and stops the event loop.
-    Writers are only closed after the current batch is fully processed, so error
-    events that appear in the same batch after ENDED are still written.
+    When SessionEventType.ENDED is received (topic 'session.ended'), the service writes
+    the ENDED record, drops all subsequent events in the batch, then flushes and closes
+    writers and stops the event loop.
     """
 
     def __init__(
@@ -100,12 +93,12 @@ class EventLoggerService(ZmqEventRecordSubscriber):
             writer.close()
         self.writers.clear()
         if self.loop is not None:
-            self.loop.call_soon_threadsafe(self._request_stop)
+            self.loop.call_soon(self._request_stop)
 
     async def process(self, records: list[EventRecord]) -> None:
         saw_shutdown = False
         for record in records:
-            if self._shutdown_received and not _is_error_event(record):
+            if self._shutdown_received:
                 continue
             if record.event_type == SessionEventType.ENDED:
                 self._shutdown_received = True
