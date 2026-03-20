@@ -274,8 +274,8 @@ example_test_preset_transforms()
 
 ### Test import errors
 ```bash
-# Ensure endpoints-repo is in PYTHONPATH
-export PYTHONPATH=/home/sdp/tattafos/endpoints-repo/src:$PYTHONPATH
+# Ensure src directory is in PYTHONPATH (from repo root)
+export PYTHONPATH=./src:$PYTHONPATH
 pytest tests/unit/dataset_manager/test_dataset_presets.py
 ```
 
