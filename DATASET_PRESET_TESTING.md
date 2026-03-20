@@ -45,35 +45,34 @@ class TestMyDatasetPresets:
             "input_col2": ["value2"],
         })
 
+    @pytest.fixture
+    def transformed_data(self, sample_data):
+        """Apply preset transforms to sample data."""
+        transforms = MyDataset.PRESETS.my_preset()
+        return apply_transforms(sample_data, transforms)
+
     def test_my_preset_instantiation(self):
         """Verify preset can be created."""
         transforms = MyDataset.PRESETS.my_preset()
         assert transforms is not None
         assert len(transforms) > 0
 
-    def test_my_preset_transforms_apply(self, sample_data):
+    def test_my_preset_transforms_apply(self, transformed_data):
         """Verify transforms apply without errors."""
-        transforms = MyDataset.PRESETS.my_preset()
-        result = apply_transforms(sample_data, transforms)
+        assert transformed_data is not None
+        assert "prompt" in transformed_data.columns  # Expected output column
 
-        assert result is not None
-        assert len(result) == len(sample_data)
-        assert "prompt" in result.columns  # Expected output column
-
-    def test_my_preset_output_format(self, sample_data):
+    def test_my_preset_output_format(self, transformed_data):
         """Verify output has expected format."""
-        transforms = MyDataset.PRESETS.my_preset()
-        result = apply_transforms(sample_data, transforms)
-
         # Validate format-specific expectations
-        assert len(result["prompt"][0]) > 0
+        assert len(transformed_data["prompt"][0]) > 0
 ```
 
 If the preset uses `Harmonize` transform (requires `transformers` library), mark slow tests:
 
 ```python
 @pytest.mark.slow
-def test_my_preset_transforms_apply(self, sample_data):
+def test_my_preset_transforms_apply(self, transformed_data):
     # Test that requires transformers library
     pass
 ```

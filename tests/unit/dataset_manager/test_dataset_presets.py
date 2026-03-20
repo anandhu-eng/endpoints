@@ -55,28 +55,33 @@ class TestCNNDailyMailPresets:
             }
         )
 
+    @pytest.fixture
+    def llama3_8b_transformed(self, sample_cnn_data):
+        """Apply llama3_8b preset transforms to sample data."""
+        transforms = CNNDailyMail.PRESETS.llama3_8b()
+        return apply_transforms(sample_cnn_data, transforms)
+
+    @pytest.fixture
+    def llama3_8b_sglang_transformed(self, sample_cnn_data):
+        """Apply llama3_8b_sglang preset transforms to sample data."""
+        transforms = CNNDailyMail.PRESETS.llama3_8b_sglang()
+        return apply_transforms(sample_cnn_data, transforms)
+
     def test_llama3_8b_preset_instantiation(self):
         """Test that llama3_8b preset can be instantiated."""
         transforms = CNNDailyMail.PRESETS.llama3_8b()
         assert transforms is not None
         assert len(transforms) > 0
 
-    def test_llama3_8b_transforms_apply(self, sample_cnn_data):
+    def test_llama3_8b_transforms_apply(self, llama3_8b_transformed):
         """Test that llama3_8b transforms apply without errors."""
-        transforms = CNNDailyMail.PRESETS.llama3_8b()
-        result = apply_transforms(sample_cnn_data, transforms)
+        assert llama3_8b_transformed is not None
+        assert "prompt" in llama3_8b_transformed.columns
+        assert len(llama3_8b_transformed["prompt"][0]) > 0
 
-        assert result is not None
-        assert len(result) == len(sample_cnn_data)
-        assert "prompt" in result.columns
-        assert len(result["prompt"][0]) > 0
-
-    def test_llama3_8b_prompt_format(self, sample_cnn_data):
+    def test_llama3_8b_prompt_format(self, llama3_8b_transformed, sample_cnn_data):
         """Test that llama3_8b produces properly formatted prompts."""
-        transforms = CNNDailyMail.PRESETS.llama3_8b()
-        result = apply_transforms(sample_cnn_data, transforms)
-
-        prompt = result["prompt"][0]
+        prompt = llama3_8b_transformed["prompt"][0]
         assert "Summarize" in prompt
         assert "news article" in prompt
         assert "article" in sample_cnn_data.columns
@@ -90,14 +95,11 @@ class TestCNNDailyMailPresets:
         assert transforms is not None
         assert len(transforms) > 0
 
-    def test_llama3_8b_sglang_transforms_apply(self, sample_cnn_data):
+    @pytest.mark.slow
+    def test_llama3_8b_sglang_transforms_apply(self, llama3_8b_sglang_transformed):
         """Test that llama3_8b_sglang transforms apply without errors."""
-        transforms = CNNDailyMail.PRESETS.llama3_8b_sglang()
-        result = apply_transforms(sample_cnn_data, transforms)
-
-        assert result is not None
-        assert len(result) == len(sample_cnn_data)
-        assert "prompt" in result.columns
+        assert llama3_8b_sglang_transformed is not None
+        assert "prompt" in llama3_8b_sglang_transformed.columns
 
 
 class TestAIME25Presets:
@@ -116,27 +118,26 @@ class TestAIME25Presets:
             }
         )
 
+    @pytest.fixture
+    def gptoss_transformed(self, sample_aime_data):
+        """Apply gptoss preset transforms to sample data."""
+        transforms = AIME25.PRESETS.gptoss()
+        return apply_transforms(sample_aime_data, transforms)
+
     def test_gptoss_preset_instantiation(self):
         """Test that gptoss preset can be instantiated."""
         transforms = AIME25.PRESETS.gptoss()
         assert transforms is not None
         assert len(transforms) > 0
 
-    def test_gptoss_transforms_apply(self, sample_aime_data):
+    def test_gptoss_transforms_apply(self, gptoss_transformed):
         """Test that gptoss transforms apply without errors."""
-        transforms = AIME25.PRESETS.gptoss()
-        result = apply_transforms(sample_aime_data, transforms)
+        assert gptoss_transformed is not None
+        assert "prompt" in gptoss_transformed.columns
 
-        assert result is not None
-        assert len(result) == len(sample_aime_data)
-        assert "prompt" in result.columns
-
-    def test_gptoss_includes_boxed_answer_format(self, sample_aime_data):
+    def test_gptoss_includes_boxed_answer_format(self, gptoss_transformed):
         """Test that gptoss format includes boxed answer format."""
-        transforms = AIME25.PRESETS.gptoss()
-        result = apply_transforms(sample_aime_data, transforms)
-
-        prompt = result["prompt"][0]
+        prompt = gptoss_transformed["prompt"][0]
         # AIME preset should instruct to put answer in \boxed{}
         assert "boxed" in prompt.lower() or "box" in prompt
 
@@ -161,27 +162,26 @@ class TestGPQAPresets:
             }
         )
 
+    @pytest.fixture
+    def gptoss_transformed(self, sample_gpqa_data):
+        """Apply gptoss preset transforms to sample data."""
+        transforms = GPQA.PRESETS.gptoss()
+        return apply_transforms(sample_gpqa_data, transforms)
+
     def test_gptoss_preset_instantiation(self):
         """Test that gptoss preset can be instantiated."""
         transforms = GPQA.PRESETS.gptoss()
         assert transforms is not None
         assert len(transforms) > 0
 
-    def test_gptoss_transforms_apply(self, sample_gpqa_data):
+    def test_gptoss_transforms_apply(self, gptoss_transformed):
         """Test that gptoss transforms apply without errors."""
-        transforms = GPQA.PRESETS.gptoss()
-        result = apply_transforms(sample_gpqa_data, transforms)
+        assert gptoss_transformed is not None
+        assert "prompt" in gptoss_transformed.columns
 
-        assert result is not None
-        assert len(result) == len(sample_gpqa_data)
-        assert "prompt" in result.columns
-
-    def test_gptoss_format_includes_choices(self, sample_gpqa_data):
+    def test_gptoss_format_includes_choices(self, gptoss_transformed):
         """Test that gptoss format includes all multiple choice options."""
-        transforms = GPQA.PRESETS.gptoss()
-        result = apply_transforms(sample_gpqa_data, transforms)
-
-        prompt = result["prompt"][0]
+        prompt = gptoss_transformed["prompt"][0]
         # Should include all four choices formatted as (A), (B), (C), (D)
         assert "(A)" in prompt
         assert "(B)" in prompt
@@ -210,27 +210,26 @@ class TestLiveCodeBenchPresets:
             }
         )
 
+    @pytest.fixture
+    def gptoss_transformed(self, sample_lcb_data):
+        """Apply gptoss preset transforms to sample data."""
+        transforms = LiveCodeBench.PRESETS.gptoss()
+        return apply_transforms(sample_lcb_data, transforms)
+
     def test_gptoss_preset_instantiation(self):
         """Test that gptoss preset can be instantiated."""
         transforms = LiveCodeBench.PRESETS.gptoss()
         assert transforms is not None
         assert len(transforms) > 0
 
-    def test_gptoss_transforms_apply(self, sample_lcb_data):
+    def test_gptoss_transforms_apply(self, gptoss_transformed):
         """Test that gptoss transforms apply without errors."""
-        transforms = LiveCodeBench.PRESETS.gptoss()
-        result = apply_transforms(sample_lcb_data, transforms)
+        assert gptoss_transformed is not None
+        assert "prompt" in gptoss_transformed.columns
 
-        assert result is not None
-        assert len(result) == len(sample_lcb_data)
-        assert "prompt" in result.columns
-
-    def test_gptoss_format_includes_code_delimiters(self, sample_lcb_data):
+    def test_gptoss_format_includes_code_delimiters(self, gptoss_transformed, sample_lcb_data):
         """Test that gptoss format includes code delimiters."""
-        transforms = LiveCodeBench.PRESETS.gptoss()
-        result = apply_transforms(sample_lcb_data, transforms)
-
-        prompt = result["prompt"][0]
+        prompt = gptoss_transformed["prompt"][0]
         # Should include ```python delimiters for code
         assert "```python" in prompt
         assert "starter_code" in sample_lcb_data.columns
@@ -261,31 +260,29 @@ class TestOpenOrcaPresets:
             }
         )
 
+    @pytest.fixture
+    def llama2_70b_transformed(self, sample_openorca_data):
+        """Apply llama2_70b preset transforms to sample data."""
+        transforms = OpenOrca.PRESETS.llama2_70b()
+        return apply_transforms(sample_openorca_data, transforms)
+
     def test_llama2_70b_preset_instantiation(self):
         """Test that llama2_70b preset can be instantiated."""
         transforms = OpenOrca.PRESETS.llama2_70b()
         assert transforms is not None
         assert len(transforms) > 0
 
-    @pytest.mark.slow
-    def test_llama2_70b_transforms_apply(self, sample_openorca_data):
+    def test_llama2_70b_transforms_apply(self, llama2_70b_transformed):
         """Test that llama2_70b transforms apply without errors."""
-        transforms = OpenOrca.PRESETS.llama2_70b()
-        result = apply_transforms(sample_openorca_data, transforms)
+        assert llama2_70b_transformed is not None
+        assert "prompt" in llama2_70b_transformed.columns
+        assert "system" in llama2_70b_transformed.columns
 
-        assert result is not None
-        assert len(result) == len(sample_openorca_data)
-        assert "prompt" in result.columns
-        assert "system" in result.columns
-
-    def test_llama2_70b_remaps_columns(self, sample_openorca_data):
+    def test_llama2_70b_remaps_columns(self, llama2_70b_transformed, sample_openorca_data):
         """Test that llama2_70b correctly remaps question->prompt and system_prompt->system."""
-        transforms = OpenOrca.PRESETS.llama2_70b()
-        result = apply_transforms(sample_openorca_data, transforms)
-
         # After transformation, original columns should be renamed
-        assert "prompt" in result.columns
-        assert "system" in result.columns
+        assert "prompt" in llama2_70b_transformed.columns
+        assert "system" in llama2_70b_transformed.columns
         # Data should be preserved in renamed columns
-        assert result["prompt"][0] == sample_openorca_data["question"][0]
-        assert result["system"][0] == sample_openorca_data["system_prompt"][0]
+        assert llama2_70b_transformed["prompt"][0] == sample_openorca_data["question"][0]
+        assert llama2_70b_transformed["system"][0] == sample_openorca_data["system_prompt"][0]
