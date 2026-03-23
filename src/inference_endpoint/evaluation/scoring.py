@@ -674,7 +674,7 @@ def _create_pred_pad_category(ground_truth: str, separator: str) -> str:
 
 
 def _parse_response_to_category(
-    output: str,
+    response: str,
     ground_truth: str,
     separator: str = _CATEGORY_SEPARATOR,
 ) -> str:
@@ -685,7 +685,7 @@ def _parse_response_to_category(
     No markdown/code-block stripping - reference passes raw string to model_validate_json.
     """
     try:
-        parsed = ProductMetadata.model_validate_json(output)
+        parsed = ProductMetadata.model_validate_json(response)
         return parsed.category.strip()
     except ValidationError:
         return _create_pred_pad_category(ground_truth, separator)
