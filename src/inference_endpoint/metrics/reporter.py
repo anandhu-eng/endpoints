@@ -362,6 +362,7 @@ class Report:
     tpot: dict[str, float]
     latency: dict[str, float]
     output_sequence_lengths: dict[str, int]
+    warmup_duration_ns: int | None = None
     tpot_reporting_mode: TPOTReportingMode = TPOTReportingMode.REQUEST_WEIGHTED
 
     @functools.cached_property
@@ -497,6 +498,8 @@ class Report:
         fn(f"Total samples issued: {self.n_samples_issued}{newline}")
         fn(f"Total samples completed: {self.n_samples_completed}{newline}")
         fn(f"Total samples failed: {self.n_samples_failed}{newline}")
+        if self.warmup_duration_ns is not None:
+            fn(f"Warmup duration: {self.warmup_duration_ns / 1e9:.2f} seconds{newline}")
         if self.duration_ns is not None:
             fn(f"Duration: {self.duration_ns / 1e9:.2f} seconds{newline}")
         else:
@@ -1331,6 +1334,7 @@ class MetricsReporter:
         self,
         tokenizer: Tokenizer | None = None,
         tpot_reporting_mode: TPOTReportingMode = TPOTReportingMode.REQUEST_WEIGHTED,
+        warmup_duration_ns: int | None = None,
     ) -> Report:
         """Creates a Report object from the metrics.
 
@@ -1382,6 +1386,7 @@ class MetricsReporter:
             n_samples_completed=sample_statuses["completed"],
             n_samples_failed=self.get_error_count(),
             duration_ns=self.derive_duration(),
+            warmup_duration_ns=warmup_duration_ns,
             ttft=ttft_summary,
             tpot=tpot_summary,
             latency=sample_latency_rollup.summarize(),

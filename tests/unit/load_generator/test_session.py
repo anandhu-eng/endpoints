@@ -15,7 +15,7 @@
 
 import random
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import inference_endpoint.metrics as metrics
 import pytest
@@ -191,20 +191,29 @@ def test_warmup_uses_sequential_sample_order():
             self.name = None
             created_schedulers.append(scheduler)
 
+    mock_recorder = MagicMock()
+    mock_recorder.__enter__ = MagicMock(return_value=mock_recorder)
+    mock_recorder.close = MagicMock()
+
     with patch(
         "inference_endpoint.load_generator.session.Scheduler.get_implementation",
         return_value=MaxThroughputScheduler,
     ):
         with patch.object(BenchmarkSession, "_run_test", return_value=None):
-            BenchmarkSession.start(
-                rt_settings,
-                dl,
-                sample_issuer,
-                sched,
-                warmup_dataset=warmup_dataset,
-                load_generator_cls=RecordingLoadGenerator,
-                max_shutdown_timeout_s=0.01,
-            )
+            with patch.object(BenchmarkSession, "_run_warmup", return_value=None):
+                with patch(
+                    "inference_endpoint.load_generator.session.EventRecorder",
+                    return_value=mock_recorder,
+                ):
+                    BenchmarkSession.start(
+                        rt_settings,
+                        dl,
+                        sample_issuer,
+                        sched,
+                        warmup_dataset=warmup_dataset,
+                        load_generator_cls=RecordingLoadGenerator,
+                        max_shutdown_timeout_s=0.01,
+                    )
 
     assert len(created_schedulers) >= 2
     warmup_scheduler = created_schedulers[1]

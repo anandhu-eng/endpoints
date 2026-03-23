@@ -66,6 +66,9 @@ class BenchmarkSession:
 
         self.sample_uuid_map: dict[str, dict[str, int]] | None = None
 
+        # Wall-clock nanoseconds spent in the warmup phase; set by _run_warmup.
+        self.warmup_duration_ns: int | None = None
+
     @property
     def is_running(self):
         return self.thread is not None and self.thread.is_alive()
@@ -76,54 +79,69 @@ class BenchmarkSession:
         # wakeup _run_test if needed, short-circuit SHUTDOWN_POLL_INTERVAL_S
         self.end_event.set()
 
+    def _run_warmup(
+        self,
+        warmup_generator: LoadGenerator,
+        max_shutdown_timeout_s: float | None = 300.0,
+    ) -> None:
+        """Issue warmup samples and drain responses using the already-open EventRecorder.
+
+        Warmup events land in the shared DB with timestamps before TEST_STARTED, so they
+        are excluded from all perf metrics. Wall-clock duration is stored on
+        ``self.warmup_duration_ns``.
+
+        Args:
+            warmup_generator: Pre-configured load generator for the warmup dataset.
+            max_shutdown_timeout_s: Drain timeout in seconds. None means wait forever.
+        """
+        warmup_start_ns = time.monotonic_ns()
+
+        self.logger.info("Warmup: issuing samples...")
+        for _ in warmup_generator:
+            pass
+        self.logger.info("Warmup samples issued, waiting for responses to drain...")
+
+        # Enable idle signalling so EventRecorder wakes end_event when all warmup
+        # responses are received, then reset it for the perf test.
+        self.event_recorder.should_check_idle = True
+        drain_start = time.monotonic()
+        while self.event_recorder.n_inflight_samples != 0:
+            if (
+                max_shutdown_timeout_s is not None
+                and time.monotonic() - drain_start > max_shutdown_timeout_s
+            ):
+                raise TimeoutError(
+                    f"Warmup drain timeout exceeded: "
+                    f"{self.event_recorder.n_inflight_samples} warmup requests "
+                    f"still in-flight after {max_shutdown_timeout_s}s"
+                )
+            if self.stop_requested:
+                self.logger.info(
+                    f"Early stop requested (pending={self.event_recorder.n_inflight_samples}), shutting down warmup..."
+                )
+                return
+            self.end_event.wait(timeout=SHUTDOWN_POLL_INTERVAL_S)
+
+        # Reset so end_event is not pre-fired for the performance drain below.
+        self.event_recorder.should_check_idle = False
+        self.end_event.clear()
+
+        self.warmup_duration_ns = time.monotonic_ns() - warmup_start_ns
+        self.logger.info("Warmup complete")
+
     def _run_test(
         self,
         perf_test_generator: LoadGenerator,
         accuracy_test_generators: dict[str, LoadGenerator] | None = None,
-        warmup_generator: LoadGenerator | None = None,
         max_shutdown_timeout_s: float | None = 300.0,
         report_dir: os.PathLike | None = None,
         tokenizer_override: AutoTokenizer | None = None,
         dump_events_log: bool = False,
     ):
-        with self.event_recorder:
+        # The EventRecorder was opened in start() before warmup ran, so both the warmup
+        # phase and the perf test share the same DB.  We are responsible for closing it.
+        try:
             try:
-                # Warmup phase: issue samples before the timed performance window.
-                # Warmup events land in the DB with timestamps before TEST_STARTED,
-                # so they are excluded from all perf metrics.
-                if warmup_generator is not None:
-                    self.logger.info("Warmup: issuing samples...")
-                    for _ in warmup_generator:
-                        pass
-                    self.logger.info(
-                        "Warmup samples issued, waiting for responses to drain..."
-                    )
-                    # Enable idle signalling so EventRecorder wakes end_event when
-                    # all warmup responses are received, then reset it for the perf test.
-                    self.event_recorder.should_check_idle = True
-                    warmup_start = time.monotonic()
-                    while self.event_recorder.n_inflight_samples != 0:
-                        if (
-                            max_shutdown_timeout_s is not None
-                            and time.monotonic() - warmup_start > max_shutdown_timeout_s
-                        ):
-                            raise TimeoutError(
-                                f"Warmup drain timeout exceeded: "
-                                f"{self.event_recorder.n_inflight_samples} warmup requests "
-                                f"still in-flight after {max_shutdown_timeout_s}s"
-                            )
-                        if self.stop_requested:
-                            self.logger.info(
-                                f"Early stop requested (pending={self.event_recorder.n_inflight_samples}), shutting down test..."
-                            )
-                            return
-                        self.end_event.wait(timeout=SHUTDOWN_POLL_INTERVAL_S)
-                    # Reset so end_event is not pre-fired for the performance drain below.
-                    self.event_recorder.should_check_idle = False
-                    self.end_event.clear()
-
-                    self.logger.info("Warmup complete")
-
                 EventRecorder.record_event(
                     SessionEvent.TEST_STARTED,
                     time.monotonic_ns(),
@@ -199,7 +217,9 @@ class BenchmarkSession:
                                 f"Error loading tokenizer for model {model}: {e}"
                             )
                             tokenizer = None
-                report = reporter.create_report(tokenizer)
+                report = reporter.create_report(
+                    tokenizer, warmup_duration_ns=self.warmup_duration_ns
+                )
 
                 # Store report on session so external callers can use it
                 self.report = report
@@ -272,6 +292,8 @@ class BenchmarkSession:
                     with open(report_path, "w") as f:
                         report.display(fn=f.write, summary_only=False, newline="\n")
                     logger.info(f"Report saved to {report_path}")
+        finally:
+            self.event_recorder.close()
 
     def wait_for_test_end(self, timeout: float | None = None) -> bool:
         """
@@ -392,17 +414,32 @@ class BenchmarkSession:
                     *args,
                 )
 
-        session.thread = threading.Thread(
-            target=session._run_test,
-            args=(load_generator,),
-            kwargs={
-                "warmup_generator": warmup_generator,
-                "accuracy_test_generators": accuracy_test_generators,
-                "max_shutdown_timeout_s": max_shutdown_timeout_s,
-                "report_dir": report_dir,
-                "tokenizer_override": tokenizer_override,
-                "dump_events_log": dump_events_log,
-            },
-        )
-        session.thread.start()
+        # Open the recorder before warmup so both phases share the same DB.
+        # _run_test is responsible for closing it when the perf test finishes.
+        session.event_recorder.__enter__()
+        thread_started = False
+        try:
+            if warmup_generator is not None:
+                session._run_warmup(warmup_generator, max_shutdown_timeout_s or 300.0)
+
+            if not session.stop_requested:
+                session.thread = threading.Thread(
+                    target=session._run_test,
+                    args=(load_generator,),
+                    kwargs={
+                        "accuracy_test_generators": accuracy_test_generators,
+                        "max_shutdown_timeout_s": max_shutdown_timeout_s,
+                        "report_dir": report_dir,
+                        "tokenizer_override": tokenizer_override,
+                        "dump_events_log": dump_events_log,
+                    },
+                )
+                session.thread.start()
+                thread_started = True
+        finally:
+            # If the thread did not start (warmup stopped early or an exception was
+            # raised), we own the recorder and must close it here.
+            if not thread_started:
+                session.event_recorder.close()
+
         return session

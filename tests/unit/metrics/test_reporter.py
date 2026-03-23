@@ -488,6 +488,7 @@ def test_reporter_json(events_db):
         "latency",
         "output_sequence_lengths",
         "tpot_reporting_mode",
+        "warmup_duration_ns",
         "qps",
         "tps",
         "test_started_at",
