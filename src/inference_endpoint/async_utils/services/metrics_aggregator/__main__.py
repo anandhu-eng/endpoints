@@ -56,6 +56,12 @@ async def main() -> None:
         default=2,
         help="Number of tokenizer worker threads (default: 2)",
     )
+    parser.add_argument(
+        "--streaming",
+        action="store_true",
+        default=False,
+        help="Enable streaming metrics (TTFT, chunk_delta, TPOT). Off by default.",
+    )
     args = parser.parse_args()
 
     args.metrics_dir.mkdir(parents=True, exist_ok=True)
@@ -85,6 +91,7 @@ async def main() -> None:
             topics=None,
             emitter=emitter,
             tokenize_pool=pool,
+            streaming=args.streaming,
             shutdown_event=shutdown_event,
         )
         loop.call_soon_threadsafe(aggregator.start)

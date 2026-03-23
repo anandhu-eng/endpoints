@@ -36,7 +36,7 @@ metrics_aggregator/
 | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **MetricsAggregatorService** | Thin event router. Receives EventRecord batches, dispatches session events to `MetricsTable.handle_session_event()` and sample events to `MetricsTable.set_field()`. Owns shutdown logic.                                                                            |
 | **MetricsTable**             | Owns sample rows, session state, trigger registry, tracked blocks, and in-flight task tracking. Handles row lifecycle (create on ISSUED, remove on COMPLETE), trigger dispatch, and tracked duration bookkeeping.                                                    |
-| **SampleRow**                | Pure data container (`dataclass(slots=True)`). Holds per-sample timestamps and a `tracked_block_idx` linking it to its tracking window. No methods, no trigger awareness.                                                                                            |
+| **SampleRow**                | Pure data container (`msgspec.Struct, gc=False`). Holds per-sample timestamps and a `tracked_block_idx` linking it to its tracking window. No methods, no trigger awareness.                                                                                         |
 | **EmitTrigger**              | ABC for metric computations. Each trigger binds runtime deps (emitter, tokenize_pool, loop) at construction. `fire(ev_rec, row, pre_change)` is called by MetricsTable when a field is set. Must be non-blocking; returns an `asyncio.Task` if async work is needed. |
 | **TrackedBlock**             | Per-tracking-window duration state. Tracks `start_ns`, `last_complete_ns`, and `completed_samples`. Duration extends to the last sample completion, not to STOP_PERFORMANCE_TRACKING.                                                                                |
 
@@ -177,11 +177,10 @@ QPS = 3 / 900
 
 ## Data Model: SampleRow
 
-A pure `dataclass(slots=True)` — no methods, no trigger awareness:
+A `msgspec.Struct` with `gc=False` — no methods, no trigger awareness:
 
 ```python
-@dataclass(slots=True)
-class SampleRow:
+class SampleRow(msgspec.Struct, gc=False):
     sample_uuid: str
     tracked_block_idx: int = -1       # -1 = untracked (should never happen with current gate)
     issued_ns: int | None = None
@@ -200,9 +199,7 @@ Compared to the previous design:
   RECV_FIRST), `output_chunks` (COMPLETE carries full output via TextModelOutput).
 - **Added**: `tracked_block_idx` (links sample to its tracking window),
   `first_chunk_token_count` (pre-computed token count for TPOT denominator).
-- **Changed from msgspec.Struct to dataclass**: SampleRow is never serialized, only
-  used as a temporary in-memory container. `dataclass(slots=True)` provides similar
-  performance without msgspec constraints.
+- `gc=False` is safe: no mutable container fields that could form reference cycles.
 
 ## Metrics Computed
 

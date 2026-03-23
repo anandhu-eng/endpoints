@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 import msgspec
 from inference_endpoint.core.record import SampleEventType, SessionEventType
+from inference_endpoint.core.types import PromptData, TextModelOutput
 
 if TYPE_CHECKING:
     from inference_endpoint.async_utils.services.metrics_aggregator.emitter import (
@@ -60,8 +61,6 @@ class SampleRow(msgspec.Struct, gc=False):  # type: ignore[call-arg]
     client_send_ns: int | None = None
     client_resp_done_ns: int | None = None
     complete_ns: int | None = None
-    # Set async by FirstChunkTokenCountTrigger; read by OslTpotTrigger for TPOT.
-    first_chunk_token_count: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -210,8 +209,6 @@ class IslTrigger(EmitTrigger):
         self._loop = loop
 
     def fire(self, ev_rec, row, pre_change):
-        from inference_endpoint.core.types import PromptData
-
         if not isinstance(ev_rec.data, PromptData):
             return None
         if ev_rec.data.token_ids is not None:
@@ -237,48 +234,8 @@ class IslTrigger(EmitTrigger):
         return None
 
 
-class FirstChunkTokenCountTrigger(EmitTrigger):
-    """Tokenize first chunk at RECV_FIRST, store count on row for TPOT."""
-
-    def __init__(
-        self,
-        tokenize_pool: TokenizePool | None,
-        loop: asyncio.AbstractEventLoop | None,
-    ):
-        super().__init__("_first_chunk_token_count", requires=())
-        self._pool = tokenize_pool
-        self._loop = loop
-
-    def fire(self, ev_rec, row, pre_change):
-        from inference_endpoint.core.types import TextModelOutput
-
-        if self._pool is None or self._loop is None:
-            return None
-        if not isinstance(ev_rec.data, TextModelOutput):
-            return None
-        text = str(ev_rec.data)
-        if not text:
-            return None
-
-        target_row = row
-        pool, loop = self._pool, self._loop
-
-        async def _compute() -> None:
-            try:
-                count = await pool.token_count_async(text, loop)
-                msgspec.structs.force_setattr(
-                    target_row, "first_chunk_token_count", count
-                )
-            except Exception:
-                logger.exception(
-                    "First chunk tokenization failed for %s", row.sample_uuid
-                )
-
-        return loop.create_task(_compute())
-
-
-class OslTpotTrigger(EmitTrigger):
-    """OSL and TPOT from COMPLETE event data."""
+class OslTrigger(EmitTrigger):
+    """OSL = token_count(full output text) from COMPLETE event data."""
 
     def __init__(
         self,
@@ -286,14 +243,12 @@ class OslTpotTrigger(EmitTrigger):
         tokenize_pool: TokenizePool | None,
         loop: asyncio.AbstractEventLoop | None,
     ):
-        super().__init__("osl", requires=("recv_first_ns",))
+        super().__init__("osl", requires=())
         self._emitter = emitter
         self._pool = tokenize_pool
         self._loop = loop
 
     def fire(self, ev_rec, row, pre_change):
-        from inference_endpoint.core.types import TextModelOutput
-
         if self._pool is None or self._loop is None:
             return None
         if not isinstance(ev_rec.data, TextModelOutput):
@@ -303,22 +258,61 @@ class OslTpotTrigger(EmitTrigger):
             return None
 
         uuid = row.sample_uuid
-        recv_first_ns = pre_change.get("recv_first_ns")
-        first_chunk_tc = row.first_chunk_token_count
-        complete_ns = ev_rec.timestamp_ns
         pool, loop, emitter = self._pool, self._loop, self._emitter
 
         async def _compute() -> None:
             try:
                 osl = await pool.token_count_async(output_text, loop)
                 emitter.emit(uuid, "osl", osl)
-                if recv_first_ns is not None and first_chunk_tc is not None:
-                    tokens_after_first = osl - first_chunk_tc
-                    if tokens_after_first > 0:
-                        tpot = (complete_ns - recv_first_ns) / tokens_after_first
-                        emitter.emit(uuid, "tpot_ns", tpot)
             except Exception:
-                logger.exception("Output tokenization failed for %s", uuid)
+                logger.exception("OSL tokenization failed for %s", uuid)
+
+        return loop.create_task(_compute())
+
+
+class TpotTrigger(EmitTrigger):
+    """TPOT = (complete_ns - recv_first_ns) / token_count(text_after_first_chunk).
+
+    Only registered when streaming mode is enabled. Computes the TPOT denominator
+    directly from TextModelOutput.text_after_first_chunk() at COMPLETE time,
+    avoiding any dependency on RECV_FIRST tokenization state.
+    """
+
+    def __init__(
+        self,
+        emitter: MetricEmitter,
+        tokenize_pool: TokenizePool | None,
+        loop: asyncio.AbstractEventLoop | None,
+    ):
+        super().__init__("tpot_ns", requires=("recv_first_ns",))
+        self._emitter = emitter
+        self._pool = tokenize_pool
+        self._loop = loop
+
+    def fire(self, ev_rec, row, pre_change):
+        if self._pool is None or self._loop is None:
+            return None
+        recv_first_ns = pre_change.get("recv_first_ns")
+        if recv_first_ns is None:
+            return None
+        if not isinstance(ev_rec.data, TextModelOutput):
+            return None
+        after_first = ev_rec.data.text_after_first_chunk()
+        if not after_first:
+            return None
+
+        uuid = row.sample_uuid
+        complete_ns = ev_rec.timestamp_ns
+        pool, loop, emitter = self._pool, self._loop, self._emitter
+
+        async def _compute() -> None:
+            try:
+                tokens_after_first = await pool.token_count_async(after_first, loop)
+                if tokens_after_first > 0:
+                    tpot = (complete_ns - recv_first_ns) / tokens_after_first
+                    emitter.emit(uuid, "tpot_ns", tpot)
+            except Exception:
+                logger.exception("TPOT tokenization failed for %s", uuid)
 
         return loop.create_task(_compute())
 
@@ -418,16 +412,14 @@ class MetricsTable:
             if not self.is_tracking:
                 return
             row = self._create_row(sample_uuid)
-            msgspec.structs.force_setattr(
-                row, "tracked_block_idx", len(self.tracked_blocks) - 1
-            )
+            row.tracked_block_idx = len(self.tracked_blocks) - 1
         else:
             row = self._in_flight.get(sample_uuid)
             if row is None:
                 return
 
         self._fire_triggers(row, field_name, ev_rec)
-        msgspec.structs.force_setattr(row, field_name, value)
+        setattr(row, field_name, value)
 
         if ev == SampleEventType.COMPLETE:
             self._update_tracked_block(row, ev_rec.timestamp_ns)

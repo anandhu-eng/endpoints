@@ -19,6 +19,8 @@ These tests exercise the aggregator's event dispatch and metric computation
 without ZMQ transport by calling process() directly.
 """
 
+import asyncio
+
 import pytest
 from inference_endpoint.async_utils.services.metrics_aggregator.aggregator import (
     MetricsAggregatorService,
@@ -51,6 +53,7 @@ class FakeEmitter(MetricEmitter):
         self.flushed = True
 
     def close(self) -> None:
+        self.flush()
         self.closed = True
 
     def get_metrics(self, sample_uuid: str) -> dict[str, int | float]:
@@ -63,7 +66,9 @@ class FakeEmitter(MetricEmitter):
 class StubAggregator(MetricsAggregatorService):
     """Bypass ZMQ init for unit testing — only process() logic is tested."""
 
-    def __init__(self, emitter: MetricEmitter, tokenize_pool=None):
+    def __init__(
+        self, emitter: MetricEmitter, tokenize_pool=None, streaming: bool = True
+    ):
         # Intentionally skip super().__init__() to avoid ZMQ socket creation.
         self._emitter = emitter
         self._shutdown_received = False
@@ -72,7 +77,7 @@ class StubAggregator(MetricsAggregatorService):
         self.is_closed = False
 
         self._table = MetricsTable()
-        self._register_triggers(self._table, emitter, tokenize_pool, None)
+        self._register_triggers(self._table, emitter, tokenize_pool, None, streaming)
 
 
 def _session(ev_type, ts=0):
@@ -86,6 +91,11 @@ def _sample(ev_type, uuid, ts=0, data=None):
 def _text(s: str) -> TextModelOutput:
     """Wrap a string in TextModelOutput for use as EventRecord.data."""
     return TextModelOutput(output=s)
+
+
+def _streaming_text(*chunks: str) -> TextModelOutput:
+    """Wrap chunks in a streaming TextModelOutput (tuple output)."""
+    return TextModelOutput(output=tuple(chunks))
 
 
 # ---------------------------------------------------------------------------
@@ -528,5 +538,266 @@ class TestEdgeCases:
         await agg.process([_session(SessionEventType.STARTED, ts=0)])
         assert not emitter.flushed
         await agg.process([_session(SessionEventType.ENDED, ts=100)])
+        assert emitter.flushed
+        assert emitter.closed
+
+
+# ---------------------------------------------------------------------------
+# Async trigger tests (with mock TokenizePool and real event loop)
+# ---------------------------------------------------------------------------
+
+
+class MockTokenizePool:
+    """Mock TokenizePool that splits on whitespace with artificial async delay."""
+
+    def __init__(self, delay: float = 0.01):
+        self._delay = delay
+
+    def token_count(self, text: str) -> int:
+        return len(text.split())
+
+    async def token_count_async(
+        self, text: str, loop: asyncio.AbstractEventLoop
+    ) -> int:
+        await asyncio.sleep(self._delay)
+        return len(text.split())
+
+    def close(self) -> None:
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
+class AsyncStubAggregator(MetricsAggregatorService):
+    """StubAggregator with a real event loop and mock tokenize pool."""
+
+    def __init__(
+        self, emitter: MetricEmitter, tokenize_pool, loop, streaming: bool = True
+    ):
+        # Intentionally skip ZMQ super().__init__()
+        self._emitter = emitter
+        self._shutdown_received = False
+        self._shutdown_event = None
+        self.loop = loop
+        self.is_closed = False
+        self._fd = None  # Required by base class close()
+
+        self._table = MetricsTable()
+        self._register_triggers(self._table, emitter, tokenize_pool, loop, streaming)
+
+
+@pytest.mark.unit
+class TestAsyncTriggers:
+    @pytest.mark.asyncio
+    async def test_isl_text_path_async(self):
+        """ISL with text prompt triggers async tokenization."""
+        emitter = FakeEmitter()
+        loop = asyncio.get_running_loop()
+        pool = MockTokenizePool(delay=0.01)
+        agg = AsyncStubAggregator(emitter, pool, loop)
+
+        await agg.process(
+            [
+                _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
+                _sample(
+                    SampleEventType.ISSUED,
+                    "s1",
+                    ts=1000,
+                    data=PromptData(text="hello world foo bar"),
+                ),
+            ]
+        )
+        # ISL task is in-flight; drain it
+        await agg._table.drain_tasks()
+        assert ("s1", "isl", 4) in emitter.emitted
+
+    @pytest.mark.asyncio
+    async def test_osl_emitted_on_complete(self):
+        """OSL is emitted via async tokenization when COMPLETE carries TextModelOutput."""
+        emitter = FakeEmitter()
+        loop = asyncio.get_running_loop()
+        pool = MockTokenizePool(delay=0.01)
+        agg = AsyncStubAggregator(emitter, pool, loop)
+
+        await agg.process(
+            [
+                _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
+                _sample(SampleEventType.ISSUED, "s1", ts=1000),
+                _sample(
+                    SampleEventType.COMPLETE,
+                    "s1",
+                    ts=5000,
+                    data=_text("the quick brown fox"),
+                ),
+            ]
+        )
+        await agg._table.drain_tasks()
+        m = emitter.get_metrics("s1")
+        assert m["sample_latency_ns"] == 4000
+        assert m["osl"] == 4
+
+    @pytest.mark.asyncio
+    async def test_tpot_emitted_for_streaming(self):
+        """TPOT is emitted for streaming responses using text_after_first_chunk."""
+        emitter = FakeEmitter()
+        loop = asyncio.get_running_loop()
+        pool = MockTokenizePool(delay=0.0)
+        agg = AsyncStubAggregator(emitter, pool, loop)
+
+        await agg.process(
+            [
+                _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
+                _sample(SampleEventType.ISSUED, "s1", ts=1000),
+                _sample(SampleEventType.RECV_FIRST, "s1", ts=2000),
+                _sample(
+                    SampleEventType.COMPLETE,
+                    "s1",
+                    ts=5000,
+                    # Streaming: 3 chunks, text_after_first_chunk = "world foo"
+                    data=_streaming_text("hello", " world", " foo"),
+                ),
+            ]
+        )
+        await agg._table.drain_tasks()
+        m = emitter.get_metrics("s1")
+        assert m["osl"] == 3  # "hello world foo" = 3 tokens
+        # tpot = (5000 - 2000) / token_count("world foo") = 3000 / 2 = 1500
+        assert m["tpot_ns"] == 1500.0
+
+    @pytest.mark.asyncio
+    async def test_tpot_skipped_when_single_chunk(self):
+        """TPOT is not emitted when there are no tokens after the first chunk."""
+        emitter = FakeEmitter()
+        loop = asyncio.get_running_loop()
+        pool = MockTokenizePool(delay=0.0)
+        agg = AsyncStubAggregator(emitter, pool, loop)
+
+        await agg.process(
+            [
+                _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
+                _sample(SampleEventType.ISSUED, "s1", ts=1000),
+                _sample(SampleEventType.RECV_FIRST, "s1", ts=2000),
+                _sample(
+                    SampleEventType.COMPLETE,
+                    "s1",
+                    ts=5000,
+                    # Single chunk: text_after_first_chunk = ""
+                    data=_streaming_text("only"),
+                ),
+            ]
+        )
+        await agg._table.drain_tasks()
+        m = emitter.get_metrics("s1")
+        assert m["osl"] == 1
+        assert "tpot_ns" not in m
+
+    @pytest.mark.asyncio
+    async def test_tpot_not_emitted_without_streaming_flag(self):
+        """TPOT trigger is not registered when streaming=False."""
+        emitter = FakeEmitter()
+        loop = asyncio.get_running_loop()
+        pool = MockTokenizePool(delay=0.0)
+        agg = AsyncStubAggregator(emitter, pool, loop, streaming=False)
+
+        await agg.process(
+            [
+                _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
+                _sample(SampleEventType.ISSUED, "s1", ts=1000),
+                _sample(SampleEventType.RECV_FIRST, "s1", ts=2000),
+                _sample(
+                    SampleEventType.COMPLETE,
+                    "s1",
+                    ts=5000,
+                    data=_streaming_text("hello", " world", " foo"),
+                ),
+            ]
+        )
+        await agg._table.drain_tasks()
+        m = emitter.get_metrics("s1")
+        assert m["sample_latency_ns"] == 4000
+        assert m["osl"] == 3
+        assert "tpot_ns" not in m
+        assert "ttft_ns" not in m
+        assert "chunk_delta_ns" not in m
+
+    @pytest.mark.asyncio
+    async def test_tpot_non_streaming_output_skipped(self):
+        """TPOT is not emitted for non-streaming (str) TextModelOutput."""
+        emitter = FakeEmitter()
+        loop = asyncio.get_running_loop()
+        pool = MockTokenizePool(delay=0.0)
+        agg = AsyncStubAggregator(emitter, pool, loop)
+
+        await agg.process(
+            [
+                _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
+                _sample(SampleEventType.ISSUED, "s1", ts=1000),
+                _sample(SampleEventType.RECV_FIRST, "s1", ts=2000),
+                _sample(
+                    SampleEventType.COMPLETE,
+                    "s1",
+                    ts=5000,
+                    # Non-streaming: str output, text_after_first_chunk = ""
+                    data=_text("hello world foo"),
+                ),
+            ]
+        )
+        await agg._table.drain_tasks()
+        m = emitter.get_metrics("s1")
+        assert m["osl"] == 3
+        assert "tpot_ns" not in m
+
+    @pytest.mark.asyncio
+    async def test_drain_tasks_awaits_in_flight(self):
+        """drain_tasks() properly awaits all in-flight async trigger tasks."""
+        emitter = FakeEmitter()
+        loop = asyncio.get_running_loop()
+        pool = MockTokenizePool(delay=0.05)
+        agg = AsyncStubAggregator(emitter, pool, loop)
+
+        await agg.process(
+            [
+                _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
+                _sample(
+                    SampleEventType.ISSUED,
+                    "s1",
+                    ts=1000,
+                    data=PromptData(text="a b c d e"),
+                ),
+            ]
+        )
+        # Tasks are in-flight but not yet complete
+        assert len(agg._table._in_flight_tasks) > 0
+
+        await agg._table.drain_tasks()
+        assert len(agg._table._in_flight_tasks) == 0
+        assert ("s1", "isl", 5) in emitter.emitted
+
+    @pytest.mark.asyncio
+    async def test_shutdown_drains_async_tasks(self):
+        """ENDED drains in-flight async tasks before finalizing."""
+        emitter = FakeEmitter()
+        loop = asyncio.get_running_loop()
+        pool = MockTokenizePool(delay=0.02)
+        agg = AsyncStubAggregator(emitter, pool, loop)
+
+        await agg.process(
+            [
+                _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
+                _sample(
+                    SampleEventType.ISSUED,
+                    "s1",
+                    ts=1000,
+                    data=PromptData(text="one two three"),
+                ),
+                _session(SessionEventType.ENDED, ts=2000),
+            ]
+        )
+        # After ENDED, drain_tasks was called, so ISL should be emitted
+        assert ("s1", "isl", 3) in emitter.emitted
         assert emitter.flushed
         assert emitter.closed

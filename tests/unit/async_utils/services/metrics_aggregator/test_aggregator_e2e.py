@@ -70,6 +70,7 @@ class CollectingEmitter(MetricEmitter):
         self.flushed = True
 
     def close(self) -> None:
+        self.flush()
         self.closed = True
 
     def get_metrics(self, sample_uuid: str) -> dict[str, int | float]:
@@ -132,6 +133,7 @@ def aggregator(
         topics=None,
         emitter=collecting_emitter,
         tokenize_pool=None,
+        streaming=True,
         shutdown_event=shutdown_event,
     )
     aggregator_loop.call_soon_threadsafe(agg.start)
@@ -348,6 +350,7 @@ class TestAggregatorE2E:
             aggregator_loop,
             topics=None,
             emitter=emitter,
+            streaming=True,
         )
         aggregator_loop.call_soon_threadsafe(agg.start)
         time.sleep(0.5)

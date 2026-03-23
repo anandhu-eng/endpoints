@@ -31,12 +31,12 @@ from inference_endpoint.core.record import (
 from .emitter import MetricEmitter
 from .metrics_table import (
     ChunkDeltaTrigger,
-    FirstChunkTokenCountTrigger,
     IslTrigger,
     MetricsTable,
-    OslTpotTrigger,
+    OslTrigger,
     RequestDurationTrigger,
     SampleLatencyTrigger,
+    TpotTrigger,
     TtftTrigger,
 )
 from .token_metrics import TokenizePool
@@ -65,6 +65,7 @@ class MetricsAggregatorService(ZmqEventRecordSubscriber):
         *args,
         emitter: MetricEmitter,
         tokenize_pool: TokenizePool | None = None,
+        streaming: bool = False,
         shutdown_event: asyncio.Event | None = None,
         **kwargs,
     ):
@@ -74,7 +75,9 @@ class MetricsAggregatorService(ZmqEventRecordSubscriber):
         self._shutdown_received = False
 
         self._table = MetricsTable()
-        self._register_triggers(self._table, emitter, tokenize_pool, self.loop)
+        self._register_triggers(
+            self._table, emitter, tokenize_pool, self.loop, streaming
+        )
 
     @staticmethod
     def _register_triggers(
@@ -82,17 +85,24 @@ class MetricsAggregatorService(ZmqEventRecordSubscriber):
         emitter: MetricEmitter,
         tokenize_pool: TokenizePool | None,
         loop: asyncio.AbstractEventLoop | None,
+        streaming: bool,
     ) -> None:
-        """Register all metric triggers on the table."""
+        """Register metric triggers on the table.
+
+        Streaming-only triggers (TTFT, chunk_delta, TPOT) are only registered
+        when ``streaming=True``.
+        """
+        # Always registered
         table.add_trigger("issued_ns", IslTrigger(emitter, tokenize_pool, loop))
-        table.add_trigger("recv_first_ns", TtftTrigger(emitter))
-        table.add_trigger(
-            "recv_first_ns", FirstChunkTokenCountTrigger(tokenize_pool, loop)
-        )
-        table.add_trigger("last_recv_ns", ChunkDeltaTrigger(emitter))
         table.add_trigger("client_resp_done_ns", RequestDurationTrigger(emitter))
         table.add_trigger("complete_ns", SampleLatencyTrigger(emitter))
-        table.add_trigger("complete_ns", OslTpotTrigger(emitter, tokenize_pool, loop))
+        table.add_trigger("complete_ns", OslTrigger(emitter, tokenize_pool, loop))
+
+        # Streaming-only
+        if streaming:
+            table.add_trigger("recv_first_ns", TtftTrigger(emitter))
+            table.add_trigger("last_recv_ns", ChunkDeltaTrigger(emitter))
+            table.add_trigger("complete_ns", TpotTrigger(emitter, tokenize_pool, loop))
 
     async def process(self, records: list[EventRecord]) -> None:
         saw_shutdown = False
@@ -143,7 +153,6 @@ class MetricsAggregatorService(ZmqEventRecordSubscriber):
             self._finalize()
 
     def _finalize(self) -> None:
-        self._emitter.flush()
         self.close()
         if self._shutdown_event is not None:
             self._shutdown_event.set()
