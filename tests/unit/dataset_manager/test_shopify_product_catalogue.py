@@ -128,8 +128,12 @@ class TestShopifyProductCatalogueGenerate:
         png_bytes = base64.b64decode(df["product_image_base64"].iloc[1])
         assert len(jpeg_bytes) > 0
         assert len(png_bytes) > 0
-        assert Image.open(BytesIO(jpeg_bytes)).format == "JPEG"
-        assert Image.open(BytesIO(png_bytes)).format == "PNG"
+        with Image.open(BytesIO(jpeg_bytes)) as jpeg_img:
+            jpeg_format = jpeg_img.format
+        with Image.open(BytesIO(png_bytes)) as png_img:
+            png_format = png_img.format
+        assert jpeg_format == "JPEG"
+        assert png_format == "PNG"
         assert df["product_image_format"].iloc[0] == "JPEG"
         assert df["product_image_format"].iloc[1] == "PNG"
 
