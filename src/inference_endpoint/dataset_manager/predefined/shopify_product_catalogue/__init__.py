@@ -50,8 +50,6 @@ def _process_sample_to_row(sample: dict[str, Any]) -> dict[str, Any]:
     image.save(image_file, format=image_format)
     image_bytes = image_file.getvalue()
 
-
-
     image_base64 = base64.b64encode(image_bytes).decode("utf-8")
     categories = sample.get("potential_product_categories", [])
 

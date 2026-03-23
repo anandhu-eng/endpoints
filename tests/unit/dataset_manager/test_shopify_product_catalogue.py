@@ -17,6 +17,7 @@
 
 import base64
 import json
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -30,26 +31,39 @@ from inference_endpoint.dataset_manager.predefined.shopify_product_catalogue.pre
     ShopifyMultimodalFormatter,
     q3vl,
 )
+from PIL import Image
+
+
+def _make_pil_image(image_format: str = "JPEG") -> Image.Image:
+    """Create a minimal 1x1 PIL Image with the given format attribute set."""
+    img = Image.new("RGB", (1, 1), color=(128, 64, 32))
+    img.format = image_format  # type: ignore[attr-defined]
+    return img
 
 
 def _make_mock_hf_row(
     *,
     product_title: str = "Test Product",
     product_description: str = "A test product",
-    product_image_bytes: bytes = b"\xff\xd8\xff",
-    product_image_path: str = "image.jpg",
+    product_image: Image.Image | None = None,
     potential_product_categories: list[str] | None = None,
     ground_truth_category: str = "Clothing > Shirts",
     ground_truth_brand: str = "Test Brand",
     ground_truth_is_secondhand: bool = False,
 ) -> dict:
-    """Create a mock row matching HuggingFace product-catalogue format."""
+    """Create a mock row matching HuggingFace product-catalogue format.
+
+    HuggingFace datasets return product_image as a PIL Image (MLCommons-style),
+    so we use PIL Images here rather than the raw bytes/path dict format.
+    """
     if potential_product_categories is None:
         potential_product_categories = ["Clothing > Shirts", "Clothing > Tops"]
+    if product_image is None:
+        product_image = _make_pil_image("JPEG")
     return {
         "product_title": product_title,
         "product_description": product_description,
-        "product_image": {"bytes": product_image_bytes, "path": product_image_path},
+        "product_image": product_image,
         "potential_product_categories": potential_product_categories,
         "ground_truth_category": ground_truth_category,
         "ground_truth_brand": ground_truth_brand,
@@ -75,7 +89,7 @@ class TestShopifyProductCatalogueGenerate:
             _make_mock_hf_row(
                 product_title="Shirt B",
                 product_description="Red silk shirt",
-                product_image_path="image.png",
+                product_image=_make_pil_image("PNG"),
                 ground_truth_category="Clothing > Shirts > Dress",
             ),
         ]
@@ -99,7 +113,7 @@ class TestShopifyProductCatalogueGenerate:
     def test_generate_converts_image_to_base64(
         self, tmp_path: Path, mock_hf_dataset: list[dict]
     ) -> None:
-        """Images are base64-encoded in output."""
+        """Images are base64-encoded in output with correct format detection."""
         with patch(
             "inference_endpoint.dataset_manager.predefined.shopify_product_catalogue.load_from_huggingface",
             return_value=mock_hf_dataset,
@@ -109,8 +123,13 @@ class TestShopifyProductCatalogueGenerate:
                 split=["train"],
                 force=True,
             )
-        expected_b64 = base64.b64encode(b"\xff\xd8\xff").decode("utf-8")
-        assert df["product_image_base64"].iloc[0] == expected_b64
+        # Verify base64 decodes to valid image bytes (PIL-saved JPEG/PNG)
+        jpeg_bytes = base64.b64decode(df["product_image_base64"].iloc[0])
+        png_bytes = base64.b64decode(df["product_image_base64"].iloc[1])
+        assert len(jpeg_bytes) > 0
+        assert len(png_bytes) > 0
+        assert Image.open(BytesIO(jpeg_bytes)).format == "JPEG"
+        assert Image.open(BytesIO(png_bytes)).format == "PNG"
         assert df["product_image_format"].iloc[0] == "JPEG"
         assert df["product_image_format"].iloc[1] == "PNG"
 
