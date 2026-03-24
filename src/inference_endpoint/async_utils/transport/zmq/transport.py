@@ -609,8 +609,11 @@ class ZmqWorkerPoolTransport(WorkerPoolTransport):
             loop, readiness_path, zmq_context, config, bind=True
         )
 
-        # socket_dir is now guaranteed set (bind() created it if needed)
+        # socket_dir is now guaranteed set (bind() created it if needed).
+        # Store resolved addresses for debugging and tests.
         assert zmq_context.socket_dir is not None
+        self._request_addrs = [zmq_context._make_address(p) for p in request_paths]
+        self._response_addr = zmq_context._make_address(response_path)
         self._worker_connector = _ZmqWorkerConnector(
             config=config,
             socket_dir=zmq_context.socket_dir,
