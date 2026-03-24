@@ -73,6 +73,16 @@ class EventRow:
     data: bytes = dataclasses.field(default=b"", metadata={"sql_type": "BLOB"})
     """The data, if any, associated with the event, encoded as JSON bytes."""
 
+    conversation_id: str | None = dataclasses.field(
+        default=None, metadata={"sql_type": "TEXT"}
+    )
+    """Conversation ID for multi-turn benchmarking (None for single-turn)"""
+
+    turn_number: int | None = dataclasses.field(
+        default=None, metadata={"sql_type": "INTEGER"}
+    )
+    """Turn number within conversation (None for single-turn)"""
+
     @staticmethod
     def to_table_query() -> str:
         # Dynamically construct table query based on the dataclass fields
@@ -92,12 +102,14 @@ class EventRow:
         placeholders = ", ".join(["?"] * len(fields))
         return f"INSERT INTO events ({names_str}) VALUES ({placeholders})"
 
-    def to_insert_params(self) -> tuple[str, str, int, bytes]:
+    def to_insert_params(self) -> tuple[str, str, int, bytes, str | None, int | None]:
         return (
             self.sample_uuid,
             self.event_type.value,
             self.timestamp_ns,
             self.data,
+            self.conversation_id,
+            self.turn_number,
         )
 
 
@@ -338,6 +350,8 @@ class EventRecorder:
         force_commit: bool = False,
         assert_active: bool = True,
         data: Any = None,
+        conversation_id: str | None = None,
+        turn_number: int | None = None,
     ) -> bool:
         """Records an event by pushing it to the queue for the writer thread to process.
 
@@ -353,6 +367,10 @@ class EventRecorder:
                                   If False, this method will return False. (Default: True)
             data (Any): The data to record associated with the event. Must be JSON serializable.
                         (Default: None)
+            conversation_id (str | None): Conversation ID for multi-turn benchmarking.
+                                          (Default: None)
+            turn_number (int | None): Turn number within conversation.
+                                      (Default: None)
         Returns:
             bool: True if the event was recorded, False otherwise. If assert_active is True,
             this method will always return True or raise an exception.
@@ -402,11 +420,20 @@ class EventRecorder:
                             "error_message": str(e),
                         }
                     ),
+                    conversation_id,
+                    turn_number,
                 )
             )
         finally:
             rec_inst.event_queue.put(
-                (sample_uuid, ev_type.value, timestamp_ns, encoded_bytes)
+                (
+                    sample_uuid,
+                    ev_type.value,
+                    timestamp_ns,
+                    encoded_bytes,
+                    conversation_id,
+                    turn_number,
+                )
             )
 
         # If force commit requested, send sentinel

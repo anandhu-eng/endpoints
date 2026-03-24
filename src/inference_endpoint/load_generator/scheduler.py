@@ -13,14 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import random
 import threading
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from collections.abc import Callable, Iterator
+from typing import Any
 
 from ..config.runtime_settings import RuntimeSettings
-from ..config.schema import LoadPatternType
+from ..config.schema import ConversationMode, LoadPatternType
+from .conversation_manager import ConversationManager
 from .sample import SampleEvent, SampleEventHandler
+
+logger = logging.getLogger(__name__)
 
 
 class SampleOrder(ABC):
@@ -418,3 +424,195 @@ class ConcurrencyScheduler(Scheduler, load_pattern=LoadPatternType.CONCURRENCY):
                     self._condition.wait()
                 self._inflight += 1
             yield s_idx, 0
+
+
+# Sentinel value to signal "block until previous turn completes"
+BLOCK_ON_PREVIOUS_TURN = -1
+
+
+class MultiTurnScheduler(Scheduler, load_pattern=LoadPatternType.MULTI_TURN):
+    """Scheduler for multi-turn conversations with turn sequencing and optional concurrency control.
+
+    Enforces turn ordering within conversations: turn N+1 cannot be issued
+    until turn N completes. Supports multiple conversation scheduling modes:
+    - PARALLEL: All conversation turn-1 at t=0, then sequence within each
+    - SEQUENTIAL: Complete conversation 1, then conversation 2, etc.
+    - POISSON: Start conversations with Poisson arrival, sequence turns within
+
+    Optionally limits total in-flight requests across all conversations via
+    target_concurrency parameter, combining turn sequencing with concurrency control.
+
+    Auto-registers for LoadPatternType.MULTI_TURN.
+
+    Attributes:
+        conversation_manager: Manages conversation state and turn sequencing.
+        dataset_metadata: Metadata from MultiTurnDataset (samples, num_conversations).
+        _condition: Threading condition for concurrency control (optional).
+        _inflight: Counter of in-flight requests (optional).
+        _target_concurrency: Maximum concurrent requests (None = unlimited).
+    """
+
+    def __init__(
+        self,
+        runtime_settings: RuntimeSettings,
+        sample_order_cls: type[SampleOrder],
+        conversation_manager: ConversationManager,
+        dataset_metadata: dict[str, Any],
+    ):
+        """Initialize multi-turn scheduler.
+
+        Args:
+            runtime_settings: Runtime configuration.
+            sample_order_cls: Sample ordering strategy (unused for multi-turn).
+            conversation_manager: Conversation state manager.
+            dataset_metadata: Metadata from MultiTurnDataset.
+        """
+        super().__init__(runtime_settings, sample_order_cls)
+        self.conversation_manager = conversation_manager
+        self.dataset_metadata = dataset_metadata
+        self.delay_fn = lambda: 0  # Unused (delays handled by blocking)
+
+        # Add concurrency control if target_concurrency is specified
+        self._condition = None
+        self._inflight = 0
+        self._target_concurrency = None
+
+        if (
+            runtime_settings.load_pattern is not None
+            and runtime_settings.load_pattern.target_concurrency is not None
+            and runtime_settings.load_pattern.target_concurrency > 0
+        ):
+            self._target_concurrency = runtime_settings.load_pattern.target_concurrency
+            self._condition = threading.Condition()
+
+            # Register completion hook to release concurrency slots
+            SampleEventHandler.register_hook(SampleEvent.COMPLETE, self._release_slot)
+
+            logger.info(
+                f"Multi-turn scheduler initialized with concurrency limit: {self._target_concurrency}"
+            )
+
+    def _release_slot(self, result=None):
+        """Release a concurrency slot and notify waiting threads.
+
+        Called via hook when a query completes. Only active if concurrency control enabled.
+
+        Args:
+            result: QueryResult from completed query (unused, required by hook signature).
+        """
+        if self._condition is not None:
+            with self._condition:
+                self._inflight -= 1
+                self._condition.notify()
+
+    def __iter__(self):
+        """Iterate with turn sequencing enforcement and optional concurrency control.
+
+        Implements two-level blocking:
+        1. Turn blocking: Turn N+1 waits for turn N to complete
+        2. Concurrency blocking: Wait for available slot if target_concurrency set
+
+        Yields (sample_index, delay_ns) pairs where delay_ns may be:
+        - BLOCK_ON_PREVIOUS_TURN: Block until previous turn completes
+        - 0: Issue immediately
+        """
+        # Get multi_turn_config from runtime_settings
+        # For now, use PARALLEL mode as default
+        mode = ConversationMode.PARALLEL
+        if hasattr(self.runtime_settings, "multi_turn_config"):
+            mode = self.runtime_settings.multi_turn_config.mode
+
+        if mode == ConversationMode.PARALLEL:
+            schedule = self._parallel_schedule()
+        elif mode == ConversationMode.SEQUENTIAL:
+            schedule = self._sequential_schedule()
+        elif mode == ConversationMode.POISSON:
+            schedule = self._poisson_schedule()
+        else:
+            raise ValueError(f"Unknown conversation mode: {mode}")
+
+        for s_idx, delay_or_sentinel in schedule:
+            sample_meta = self.dataset_metadata["samples"][s_idx]
+            conv_id = sample_meta["conversation_id"]
+            turn = sample_meta["turn"]
+
+            # Step 1: Block on previous turn if needed (turn sequencing)
+            if delay_or_sentinel == BLOCK_ON_PREVIOUS_TURN:
+                timeout = 300.0  # Default timeout
+                if hasattr(self.runtime_settings, "multi_turn_config"):
+                    timeout = self.runtime_settings.multi_turn_config.turn_timeout_s
+
+                if not self.conversation_manager.wait_for_turn_ready(
+                    conv_id, turn, timeout
+                ):
+                    logger.warning(
+                        f"Turn {turn} of {conv_id} timed out waiting for prev turn"
+                    )
+                    continue  # Skip this turn
+                delay_ns = 0
+            else:
+                delay_ns = delay_or_sentinel
+
+            # Step 2: Block on concurrency limit if enabled (concurrency control)
+            if self._condition is not None:
+                with self._condition:
+                    while self._inflight >= self._target_concurrency:
+                        self._condition.wait()
+                    self._inflight += 1
+
+            yield s_idx, delay_ns
+
+    def _parallel_schedule(self):
+        """Issue turn-1 for all conversations at t=0, then sequence within each.
+
+        Yields:
+            (sample_index, delay) pairs where delay is 0 or BLOCK_ON_PREVIOUS_TURN.
+        """
+        # Group samples by conversation
+        conv_samples = defaultdict(list)
+        for sample_meta in self.dataset_metadata["samples"]:
+            conv_id = sample_meta["conversation_id"]
+            conv_samples[conv_id].append((sample_meta["index"], sample_meta["turn"]))
+
+        # Emit all turn-1 samples immediately
+        for conv_id, turns in conv_samples.items():
+            first_turn_idx = next(idx for idx, turn in turns if turn == 1)
+            yield first_turn_idx, 0
+
+        # Subsequent turns: yield with blocking sentinel
+        for conv_id, turns in conv_samples.items():
+            for idx, turn in sorted(turns, key=lambda x: x[1]):
+                if turn > 1:
+                    yield idx, BLOCK_ON_PREVIOUS_TURN
+
+    def _sequential_schedule(self):
+        """Complete conv1, then conv2, etc.
+
+        Yields:
+            (sample_index, delay) pairs where delay is 0 or BLOCK_ON_PREVIOUS_TURN.
+        """
+        conv_samples = defaultdict(list)
+        for sample_meta in self.dataset_metadata["samples"]:
+            conv_id = sample_meta["conversation_id"]
+            conv_samples[conv_id].append((sample_meta["index"], sample_meta["turn"]))
+
+        for conv_id in sorted(conv_samples.keys()):
+            turns = sorted(conv_samples[conv_id], key=lambda x: x[1])
+            for i, (idx, turn) in enumerate(turns):
+                if i == 0:
+                    yield idx, 0  # First turn of conversation
+                else:
+                    yield idx, BLOCK_ON_PREVIOUS_TURN
+
+    def _poisson_schedule(self):
+        """Start conversations with Poisson arrival, sequence turns within.
+
+        TODO: Implement Poisson conversation arrival.
+        For now, fall back to parallel mode.
+        """
+        # TODO: Implement Poisson conversation arrival
+        # For now, fall back to parallel
+        logger.warning(
+            "Poisson conversation mode not yet implemented, using PARALLEL mode"
+        )
+        return self._parallel_schedule()

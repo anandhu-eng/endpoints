@@ -20,7 +20,7 @@ import logging
 
 from inference_endpoint.core.types import Query, QueryResult, StreamChunk
 from inference_endpoint.endpoint_client.http_client import HTTPEndpointClient
-from inference_endpoint.load_generator import SampleIssuer
+from inference_endpoint.load_generator import ConversationSample, SampleIssuer
 from inference_endpoint.load_generator.sample import Sample, SampleEventHandler
 from inference_endpoint.profiling import profile
 
@@ -92,7 +92,16 @@ class HttpClientSampleIssuer(SampleIssuer):
         # If using extra headers (e.g., Authorization), pre-cache them in
         # worker.py request-template via HttpRequestTemplate.cache_headers()
         # to avoid per-request encoding overhead at runtime.
-        self.http_client.issue(Query(id=sample.uuid, data=sample.data))
+        query = Query(id=sample.uuid, data=sample.data)
+
+        # Attach conversation metadata if ConversationSample
+        if isinstance(sample, ConversationSample):
+            query._conversation_metadata = {
+                "conversation_id": sample.conversation_id,
+                "turn": sample.turn_number,
+            }
+
+        self.http_client.issue(query)
 
     def shutdown(self):
         """

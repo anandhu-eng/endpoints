@@ -21,8 +21,9 @@ from typing import Any
 from ..dataset_manager.dataset import Dataset
 from ..metrics.recorder import EventRecorder
 from ..utils import sleep_ns
+from .conversation_manager import ConversationManager
 from .events import SessionEvent
-from .sample import IssuedSample, Sample
+from .sample import ConversationSample, IssuedSample, Sample
 from .scheduler import Scheduler
 
 
@@ -205,6 +206,10 @@ class LoadGenerator(ABC):
         """
         timestamp_ns = time.monotonic_ns()
 
+        # Extract conversation metadata if ConversationSample
+        conv_id = getattr(sample, "conversation_id", None)
+        turn_num = getattr(sample, "turn_number", None)
+
         # Currently, EventRecorder will raise an Exception if the in-flight sample
         # counter is negative. This happens if the SampleIssuer somehow invokes a
         # SampleEvent.COMPLETE event before the record_event call for LOADGEN_ISSUE_CALLED
@@ -217,6 +222,8 @@ class LoadGenerator(ABC):
             SessionEvent.LOADGEN_ISSUE_CALLED,
             timestamp_ns,
             sample_uuid=sample.uuid,
+            conversation_id=conv_id,
+            turn_number=turn_num,
         )
         logging.debug(f"Issuing sample {sample.uuid} at {timestamp_ns}")
         self.sample_issuer.issue(sample)
@@ -266,6 +273,11 @@ class SchedulerBasedLoadGenerator(LoadGenerator):
         self.last_issue_timestamp_ns = 0
         self._start_time_ns: int | None = None
 
+        # Check if multi-turn mode (scheduler has conversation_manager)
+        self.conversation_manager: ConversationManager | None = getattr(
+            scheduler, "conversation_manager", None
+        )
+
     def __next__(self) -> IssuedSample:
         """Issue next sample according to scheduler timing.
 
@@ -304,8 +316,46 @@ class SchedulerBasedLoadGenerator(LoadGenerator):
         # Data loading is not timed for Time-to-Token metrics. It is assumed that the
         # hypothetical user would have put the data into memory available for a network
         # request beforehand.
-        sample = Sample(None)  # Create sample object first to generate uuid
-        sample.data = self.load_sample_data(s_idx, sample.uuid)
+        sample_data_raw = self.load_sample_data(s_idx, sample_uuid="placeholder")
+
+        # Check if multi-turn sample
+        if (
+            "conversation_id" in sample_data_raw
+            and self.conversation_manager is not None
+        ):
+            # Multi-turn path: build full messages array with history
+            conv_id = sample_data_raw["conversation_id"]
+            turn = sample_data_raw["turn"]
+
+            # Get conversation state (includes message history)
+            conv_state = self.conversation_manager.get_or_create(
+                conv_id, sample_data_raw.get("system")
+            )
+
+            # Build full messages array
+            messages = conv_state.message_history.copy()
+            messages.append({"role": "user", "content": sample_data_raw["content"]})
+
+            # Create ConversationSample
+            sample = ConversationSample(
+                data={
+                    "messages": messages,
+                    "model": sample_data_raw.get("model"),
+                    "max_completion_tokens": sample_data_raw.get("max_new_tokens", 128),
+                    "stream": sample_data_raw.get("stream", False),
+                },
+                conversation_id=conv_id,
+                turn_number=turn,
+            )
+            sample.conversation_state = conv_state
+
+            # Mark turn as issued (in-flight)
+            self.conversation_manager.mark_turn_issued(
+                conv_id, turn, sample_data_raw["content"]
+            )
+        else:
+            # Single-turn path (existing logic)
+            sample = Sample(sample_data_raw)
 
         self.uuid_to_index_map[sample.uuid] = s_idx
 

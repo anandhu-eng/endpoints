@@ -74,6 +74,35 @@ class Sample:
             raise AttributeError(f"Sample is immutable - cannot set attribute: {name}")
 
 
+class ConversationSample(Sample):
+    """Sample with conversation metadata for multi-turn benchmarking.
+
+    Extends Sample with conversation-specific fields for tracking multi-turn
+    conversation state and sequencing. Used when benchmarking conversational AI
+    workloads where each turn depends on previous responses.
+
+    Attributes:
+        conversation_id: Unique identifier for the conversation this sample belongs to.
+        turn_number: Turn number within the conversation (1-indexed).
+        conversation_state: Reference to ConversationState (set by LoadGenerator).
+    """
+
+    __slots__ = ["uuid", "data", "conversation_id", "turn_number", "conversation_state"]
+
+    def __init__(self, data: Any, conversation_id: str, turn_number: int):
+        """Initialize conversation sample with metadata.
+
+        Args:
+            data: Request data to send to endpoint.
+            conversation_id: Unique identifier for the conversation.
+            turn_number: Turn number within the conversation (1-indexed).
+        """
+        super().__init__(data)
+        self.conversation_id = conversation_id
+        self.turn_number = turn_number
+        self.conversation_state = None  # Set by LoadGenerator
+
+
 class _SampleEventHandler:
     """Contains handlers for SampleEvents given a sample UUID. This is also to avoid needing other classes
     to do their own bookkeeping for Sample objects, which can be discarded once they are issued, as long as
@@ -91,7 +120,12 @@ class _SampleEventHandler:
     is being deprecated in favor of the pub-sub EventLoggerService.
     """
 
-    __slots__ = ["first_chunk_hooks", "non_first_chunk_hooks", "complete_hooks"]
+    __slots__ = [
+        "first_chunk_hooks",
+        "non_first_chunk_hooks",
+        "complete_hooks",
+        "conversation_manager",
+    ]
 
     SINGLETON = None
     _initialized = False
@@ -109,6 +143,15 @@ class _SampleEventHandler:
         self.first_chunk_hooks = []
         self.non_first_chunk_hooks = []
         self.complete_hooks = []
+        self.conversation_manager = None
+
+    def set_conversation_manager(self, manager):
+        """Enable multi-turn mode by setting conversation manager.
+
+        Args:
+            manager: ConversationManager instance for tracking conversation state.
+        """
+        self.conversation_manager = manager
 
     def register_hook(
         self,
@@ -182,6 +225,12 @@ class _SampleEventHandler:
 
         assert isinstance(result, QueryResult), f"Invalid result type: {type(result)}"
 
+        # Update conversation state if multi-turn
+        if self.conversation_manager and hasattr(result, "_conversation_metadata"):
+            conv_id = result._conversation_metadata["conversation_id"]
+            response_text = result.get_response_output_string()
+            self.conversation_manager.mark_turn_complete(conv_id, response_text)
+
         # Even if there is an error, we still record the event to count the sample as complete
         if result.error is not None:
             err_str = str(result.error)
@@ -189,11 +238,20 @@ class _SampleEventHandler:
 
             record_exception(err_str, result.id)
 
+        # Extract conversation metadata for event recording
+        conv_id = None
+        turn_num = None
+        if hasattr(result, "_conversation_metadata"):
+            conv_id = result._conversation_metadata.get("conversation_id")
+            turn_num = result._conversation_metadata.get("turn")
+
         EventRecorder.record_event(
             SampleEvent.COMPLETE,
             timestamp_ns,
             sample_uuid=result.id,
             data=result.response_output,
+            conversation_id=conv_id,
+            turn_number=turn_num,
         )
 
         for hook in self.complete_hooks:

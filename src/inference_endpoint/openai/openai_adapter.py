@@ -86,15 +86,23 @@ class OpenAIAdapter(HttpRequestAdapter):
 
     @classmethod
     def to_endpoint_request(cls, query: Query) -> CreateChatCompletionRequest:
-        """Convert a Query to an OpenAI request."""
-        if "prompt" not in query.data:
-            raise ValueError("prompt not found in json_value")
+        """Convert a Query to an OpenAI request.
 
-        messages = [{"role": Role5.user.value, "content": query.data["prompt"]}]
-        if "system" in query.data:
-            messages.insert(
-                0, {"role": Role3.system.value, "content": query.data["system"]}
-            )
+        Supports both single-turn (prompt/system) and multi-turn (messages array) formats.
+        """
+        # Check if multi-turn (messages array already built)
+        if "messages" in query.data and isinstance(query.data["messages"], list):
+            messages = query.data["messages"]
+        else:
+            # Single-turn path: build from prompt/system
+            if "prompt" not in query.data:
+                raise ValueError("prompt not found in json_value")
+
+            messages = [{"role": Role5.user.value, "content": query.data["prompt"]}]
+            if "system" in query.data:
+                messages.insert(
+                    0, {"role": Role3.system.value, "content": query.data["system"]}
+                )
 
         request = CreateChatCompletionRequest(
             model=ModelIdsShared(query.data.get("model", "no-model-name")),
