@@ -488,6 +488,10 @@ def run_benchmark(config: BenchmarkConfig, test_mode: TestMode) -> None:
         type(config).__name__,
         config.model_dump_json(indent=2, exclude_none=True),
     )
+    from inference_endpoint.async_utils.runner import run_async
+
+    from .execute_async import run_benchmark_async
+
     ctx = setup_benchmark(config, test_mode)
-    report, collector = run_benchmark_threaded(ctx)
+    report, collector = run_async(run_benchmark_async(ctx))
     finalize_benchmark(ctx, report, collector)
