@@ -94,7 +94,7 @@ async def main() -> None:
             streaming=args.streaming,
             shutdown_event=shutdown_event,
         )
-        loop.call_soon_threadsafe(aggregator.start)
+        loop.call_soon(aggregator.start)
         await shutdown_event.wait()
 
 

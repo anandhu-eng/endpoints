@@ -261,17 +261,34 @@ class TestTimingMetrics:
 
     @pytest.mark.asyncio
     async def test_non_streaming_latency_only(self):
+        """Non-streaming sample emits sample_latency_ns and OSL, but no TTFT/chunk_delta/TPOT.
+
+        Uses AsyncStubAggregator with a real loop and MockTokenizePool so that
+        async triggers (OslTrigger) actually execute. This ensures OSL is
+        emitted for non-streaming samples, and that the absence of streaming
+        metrics is due to *logic* (no RECV_FIRST means no TTFT/TPOT, no
+        RECV_NON_FIRST means no chunk_delta), not because the pool was missing.
+        """
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        loop = asyncio.get_running_loop()
+        pool = MockTokenizePool(delay=0.0)
+        agg = AsyncStubAggregator(emitter, pool, loop)
         await agg.process(
             [
                 _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
                 _sample(SampleEventType.ISSUED, "s1", ts=1000),
-                _sample(SampleEventType.COMPLETE, "s1", ts=3000),
+                _sample(
+                    SampleEventType.COMPLETE,
+                    "s1",
+                    ts=3000,
+                    data=_text("hello world"),
+                ),
             ]
         )
+        await agg._table.drain_tasks()
         m = emitter.get_metrics("s1")
         assert m["sample_latency_ns"] == 2000
+        assert m["osl"] == 2
         assert "ttft_ns" not in m
         assert "chunk_delta_ns" not in m
         assert "tpot_ns" not in m
@@ -557,7 +574,7 @@ class MockTokenizePool:
         return len(text.split())
 
     async def token_count_async(
-        self, text: str, loop: asyncio.AbstractEventLoop
+        self, text: str, _loop: asyncio.AbstractEventLoop
     ) -> int:
         await asyncio.sleep(self._delay)
         return len(text.split())
@@ -801,3 +818,9 @@ class TestAsyncTriggers:
         assert ("s1", "isl", 3) in emitter.emitted
         assert emitter.flushed
         assert emitter.closed
+
+    # TODO: Add tests for trigger exception handling (logger.exception paths).
+    # Inject a MockTokenizePool that raises on token_count_async and verify:
+    # - No metric is emitted for the failing trigger
+    # - The aggregator does not crash
+    # - The task set is cleaned up (done_callback fires on failed tasks)

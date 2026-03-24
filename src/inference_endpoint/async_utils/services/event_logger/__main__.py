@@ -156,7 +156,7 @@ async def main() -> None:
             shutdown_event=shutdown_event,
         )
 
-        loop.call_soon_threadsafe(logger.start)
+        loop.call_soon(logger.start)
         await shutdown_event.wait()
 
 

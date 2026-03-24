@@ -276,6 +276,15 @@ class TpotTrigger(EmitTrigger):
     Only registered when streaming mode is enabled. Computes the TPOT denominator
     directly from TextModelOutput.text_after_first_chunk() at COMPLETE time,
     avoiding any dependency on RECV_FIRST tokenization state.
+
+    # NOTE(agents): This trigger tokenizes text_after_first_chunk independently
+    # from OslTrigger, which tokenizes the full output. This means the output is
+    # tokenized twice at COMPLETE time for streaming samples. This is intentional:
+    # OSL is always required (non-streaming and streaming), while TPOT is
+    # streaming-only. Keeping them as separate triggers allows conditional
+    # registration via the streaming flag. If tokenization throughput becomes a
+    # bottleneck, consider merging OSL and TPOT into a single trigger that
+    # tokenizes once and derives both metrics.
     """
 
     def __init__(
