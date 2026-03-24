@@ -20,6 +20,7 @@ without ZMQ transport by calling process() directly.
 """
 
 import asyncio
+from unittest.mock import MagicMock
 
 import pytest
 from inference_endpoint.async_utils.services.metrics_aggregator.aggregator import (
@@ -27,9 +28,6 @@ from inference_endpoint.async_utils.services.metrics_aggregator.aggregator impor
 )
 from inference_endpoint.async_utils.services.metrics_aggregator.emitter import (
     MetricEmitter,
-)
-from inference_endpoint.async_utils.services.metrics_aggregator.metrics_table import (
-    MetricsTable,
 )
 from inference_endpoint.core.record import (
     ErrorEventType,
@@ -63,21 +61,30 @@ class FakeEmitter(MetricEmitter):
         return [(uuid, val) for uuid, name, val in self.emitted if name == metric_name]
 
 
-class StubAggregator(MetricsAggregatorService):
-    """Bypass ZMQ init for unit testing — only process() logic is tested."""
+def _mock_zmq_context() -> MagicMock:
+    """Create a mock ManagedZMQContext that no-ops all ZMQ operations."""
+    ctx = MagicMock()
+    ctx.socket.return_value = MagicMock()
+    ctx.connect.return_value = "ipc:///mock/socket"
+    return ctx
 
-    def __init__(
-        self, emitter: MetricEmitter, tokenize_pool=None, streaming: bool = True
-    ):
-        # Intentionally skip super().__init__() to avoid ZMQ socket creation.
-        self._emitter = emitter
-        self._shutdown_received = False
-        self._shutdown_event = None
-        self.loop = None  # type: ignore[assignment]
-        self.is_closed = False
 
-        self._table = MetricsTable()
-        self._register_triggers(self._table, emitter, tokenize_pool, None, streaming)
+def make_stub_aggregator(
+    emitter: MetricEmitter, tokenize_pool=None, streaming: bool = True
+) -> MetricsAggregatorService:
+    """Create a MetricsAggregatorService with ZMQ mocked out.
+
+    Uses a mock ManagedZMQContext so the full __init__ chain runs
+    (including super().__init__) without creating real ZMQ sockets.
+    """
+    return MetricsAggregatorService(
+        "mock_path",
+        _mock_zmq_context(),
+        MagicMock(spec=asyncio.AbstractEventLoop),
+        emitter=emitter,
+        tokenize_pool=tokenize_pool,
+        streaming=streaming,
+    )
 
 
 def _session(ev_type, ts=0):
@@ -108,7 +115,7 @@ class TestTrackingWindow:
     @pytest.mark.asyncio
     async def test_not_tracked_before_start(self):
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
         await agg.process(
             [
                 _session(SessionEventType.STARTED, ts=0),
@@ -121,7 +128,7 @@ class TestTrackingWindow:
     @pytest.mark.asyncio
     async def test_tracked_after_start(self):
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
         await agg.process(
             [
                 _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
@@ -133,7 +140,7 @@ class TestTrackingWindow:
     @pytest.mark.asyncio
     async def test_not_tracked_after_stop(self):
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
         await agg.process(
             [
                 _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
@@ -147,7 +154,7 @@ class TestTrackingWindow:
     async def test_inflight_sample_continues_after_stop(self):
         """A sample issued during tracking completes normally after STOP."""
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
         await agg.process(
             [
                 _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
@@ -165,7 +172,7 @@ class TestTrackingWindow:
     async def test_restart_tracking_window(self):
         """START -> STOP -> START creates a second tracking window."""
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
         await agg.process(
             [
                 _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
@@ -186,7 +193,7 @@ class TestTrackingWindow:
     async def test_tracked_block_durations(self):
         """Tracked blocks extend to last sample completion."""
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
         await agg.process(
             [
                 _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
@@ -214,7 +221,7 @@ class TestTimingMetrics:
     @pytest.mark.asyncio
     async def test_ttft_and_sample_latency(self):
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
         await agg.process(
             [
                 _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
@@ -230,7 +237,7 @@ class TestTimingMetrics:
     @pytest.mark.asyncio
     async def test_request_duration(self):
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
         await agg.process(
             [
                 _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
@@ -245,7 +252,7 @@ class TestTimingMetrics:
     @pytest.mark.asyncio
     async def test_chunk_deltas(self):
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
         await agg.process(
             [
                 _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
@@ -272,7 +279,7 @@ class TestTimingMetrics:
         emitter = FakeEmitter()
         loop = asyncio.get_running_loop()
         pool = MockTokenizePool(delay=0.0)
-        agg = AsyncStubAggregator(emitter, pool, loop)
+        agg = make_async_stub_aggregator(emitter, pool, loop)
         await agg.process(
             [
                 _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
@@ -297,7 +304,7 @@ class TestTimingMetrics:
     async def test_all_timing_metrics_full_lifecycle(self):
         """Full streaming sample lifecycle emits all expected timing metrics."""
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
         await agg.process(
             [
                 _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
@@ -319,7 +326,7 @@ class TestTimingMetrics:
     async def test_chunk_delta_not_emitted_without_last_recv(self):
         """RECV_NON_FIRST without prior RECV_FIRST: no chunk_delta emitted."""
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
         await agg.process(
             [
                 _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
@@ -334,7 +341,7 @@ class TestTimingMetrics:
     async def test_request_duration_not_emitted_without_client_send(self):
         """CLIENT_RESP_DONE without CLIENT_SEND: no request_duration."""
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
         await agg.process(
             [
                 _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
@@ -357,7 +364,7 @@ class TestIsl:
     async def test_issued_with_token_ids_emits_isl_directly(self):
         """SGLang path: PromptData with token_ids emits ISL = len(token_ids)."""
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
         await agg.process(
             [
                 _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
@@ -374,7 +381,7 @@ class TestIsl:
     @pytest.mark.asyncio
     async def test_issued_without_data_no_isl(self):
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
         await agg.process(
             [
                 _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
@@ -394,7 +401,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_untracked_sample_events_ignored(self):
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
         await agg.process(
             [
                 _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
@@ -407,7 +414,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_complete_removes_row(self):
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
         await agg.process(
             [
                 _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
@@ -421,7 +428,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_session_ended_flushes_and_closes(self):
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
         await agg.process(
             [
                 _session(SessionEventType.STARTED, ts=0),
@@ -434,7 +441,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_events_after_ended_are_dropped(self):
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
         await agg.process(
             [
                 _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
@@ -448,7 +455,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_empty_sample_uuid_ignored(self):
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
         await agg.process(
             [
                 _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
@@ -460,7 +467,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_multiple_samples_independent(self):
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
         await agg.process(
             [
                 _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
@@ -483,7 +490,7 @@ class TestEdgeCases:
     async def test_transport_events_ignored(self):
         """TRANSPORT_SENT / TRANSPORT_RECV should not affect metrics."""
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
         await agg.process(
             [
                 _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
@@ -500,7 +507,7 @@ class TestEdgeCases:
     async def test_error_events_ignored(self):
         """Error events should not crash the aggregator."""
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
         await agg.process(
             [
                 _session(SessionEventType.START_PERFORMANCE_TRACKING, ts=0),
@@ -518,7 +525,7 @@ class TestEdgeCases:
     @pytest.mark.asyncio
     async def test_session_started_stores_timestamp(self):
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
         await agg.process([_session(SessionEventType.STARTED, ts=42)])
         assert agg._table.session_started_ns == 42
 
@@ -526,7 +533,7 @@ class TestEdgeCases:
     async def test_process_multiple_batches(self):
         """Two sequential process() calls maintain state correctly."""
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
 
         await agg.process(
             [
@@ -551,7 +558,7 @@ class TestEdgeCases:
     async def test_ended_in_second_batch(self):
         """ENDED in a later batch still triggers finalize."""
         emitter = FakeEmitter()
-        agg = StubAggregator(emitter)
+        agg = make_stub_aggregator(emitter)
         await agg.process([_session(SessionEventType.STARTED, ts=0)])
         assert not emitter.flushed
         await agg.process([_session(SessionEventType.ENDED, ts=100)])
@@ -589,22 +596,18 @@ class MockTokenizePool:
         self.close()
 
 
-class AsyncStubAggregator(MetricsAggregatorService):
-    """StubAggregator with a real event loop and mock tokenize pool."""
-
-    def __init__(
-        self, emitter: MetricEmitter, tokenize_pool, loop, streaming: bool = True
-    ):
-        # Intentionally skip ZMQ super().__init__()
-        self._emitter = emitter
-        self._shutdown_received = False
-        self._shutdown_event = None
-        self.loop = loop
-        self.is_closed = False
-        self._fd = None  # Required by base class close()
-
-        self._table = MetricsTable()
-        self._register_triggers(self._table, emitter, tokenize_pool, loop, streaming)
+def make_async_stub_aggregator(
+    emitter: MetricEmitter, tokenize_pool, loop, streaming: bool = True
+) -> MetricsAggregatorService:
+    """Create a MetricsAggregatorService with a real loop and mock ZMQ."""
+    return MetricsAggregatorService(
+        "mock_path",
+        _mock_zmq_context(),
+        loop,
+        emitter=emitter,
+        tokenize_pool=tokenize_pool,
+        streaming=streaming,
+    )
 
 
 @pytest.mark.unit
@@ -615,7 +618,7 @@ class TestAsyncTriggers:
         emitter = FakeEmitter()
         loop = asyncio.get_running_loop()
         pool = MockTokenizePool(delay=0.01)
-        agg = AsyncStubAggregator(emitter, pool, loop)
+        agg = make_async_stub_aggregator(emitter, pool, loop)
 
         await agg.process(
             [
@@ -638,7 +641,7 @@ class TestAsyncTriggers:
         emitter = FakeEmitter()
         loop = asyncio.get_running_loop()
         pool = MockTokenizePool(delay=0.01)
-        agg = AsyncStubAggregator(emitter, pool, loop)
+        agg = make_async_stub_aggregator(emitter, pool, loop)
 
         await agg.process(
             [
@@ -663,7 +666,7 @@ class TestAsyncTriggers:
         emitter = FakeEmitter()
         loop = asyncio.get_running_loop()
         pool = MockTokenizePool(delay=0.0)
-        agg = AsyncStubAggregator(emitter, pool, loop)
+        agg = make_async_stub_aggregator(emitter, pool, loop)
 
         await agg.process(
             [
@@ -691,7 +694,7 @@ class TestAsyncTriggers:
         emitter = FakeEmitter()
         loop = asyncio.get_running_loop()
         pool = MockTokenizePool(delay=0.0)
-        agg = AsyncStubAggregator(emitter, pool, loop)
+        agg = make_async_stub_aggregator(emitter, pool, loop)
 
         await agg.process(
             [
@@ -718,7 +721,7 @@ class TestAsyncTriggers:
         emitter = FakeEmitter()
         loop = asyncio.get_running_loop()
         pool = MockTokenizePool(delay=0.0)
-        agg = AsyncStubAggregator(emitter, pool, loop, streaming=False)
+        agg = make_async_stub_aggregator(emitter, pool, loop, streaming=False)
 
         await agg.process(
             [
@@ -747,7 +750,7 @@ class TestAsyncTriggers:
         emitter = FakeEmitter()
         loop = asyncio.get_running_loop()
         pool = MockTokenizePool(delay=0.0)
-        agg = AsyncStubAggregator(emitter, pool, loop)
+        agg = make_async_stub_aggregator(emitter, pool, loop)
 
         await agg.process(
             [
@@ -774,7 +777,7 @@ class TestAsyncTriggers:
         emitter = FakeEmitter()
         loop = asyncio.get_running_loop()
         pool = MockTokenizePool(delay=0.05)
-        agg = AsyncStubAggregator(emitter, pool, loop)
+        agg = make_async_stub_aggregator(emitter, pool, loop)
 
         await agg.process(
             [
@@ -800,7 +803,7 @@ class TestAsyncTriggers:
         emitter = FakeEmitter()
         loop = asyncio.get_running_loop()
         pool = MockTokenizePool(delay=0.02)
-        agg = AsyncStubAggregator(emitter, pool, loop)
+        agg = make_async_stub_aggregator(emitter, pool, loop)
 
         await agg.process(
             [
