@@ -109,7 +109,7 @@ class EmitTrigger(ABC):
         pre_change: dict[str, Any],
     ) -> asyncio.Task | None:
         """Must be non-blocking. Return a Task if async work was scheduled."""
-        ...
+        raise NotImplementedError()
 
 
 # ---------------------------------------------------------------------------
