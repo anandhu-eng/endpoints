@@ -25,6 +25,7 @@ import os
 import sqlite3
 from collections import defaultdict
 from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -39,8 +40,6 @@ from ..utils import monotime_to_datetime
 if TYPE_CHECKING:
     from transformers import Tokenizer
 
-logger = logging.getLogger(__name__)
-
 
 def _parallel_batch_tokenize(tokenizer: Tokenizer, texts: list[str]) -> list[int]:
     """Batch-tokenize texts using all available cores and return token counts.
@@ -49,7 +48,6 @@ def _parallel_batch_tokenize(tokenizer: Tokenizer, texts: list[str]) -> list[int
     HuggingFace tokenizers use a Rust backend that releases the GIL,
     so threads achieve real parallelism without GIL contention.
     """
-    from concurrent.futures import ThreadPoolExecutor
 
     n_cores = os.cpu_count() or 1
     n_workers = max(1, int(n_cores * 0.95))
@@ -1093,7 +1091,7 @@ class MetricsReporter:
 
         # Parallel batch tokenize across ~95% of cores
         token_counts = _parallel_batch_tokenize(tokenizer, texts)
-        rows = list(zip(uuids, token_counts, strict=False))
+        rows = list(zip(uuids, token_counts, strict=True))
 
         return RollupQueryTable("output_sequence_length", None, rows)
 
@@ -1211,7 +1209,7 @@ class MetricsReporter:
             repeats = None
 
         for sample_uuid, n_non_first_tokens in zip(
-            batch_uuids, token_counts, strict=False
+            batch_uuids, token_counts, strict=True
         ):
             latency = sample_latency_rollup.filter_uuid(sample_uuid, only_first=True)
             if latency is None:

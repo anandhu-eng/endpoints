@@ -92,6 +92,10 @@ class BenchmarkSession:
                     data=get_version_info(),
                 )
 
+                # Note: stop_requested is checked after each iteration, so one
+                # additional sample may be issued after the flag is set. This is
+                # acceptable — the alternative (checking before next()) would
+                # require breaking the generator protocol.
                 for _ in perf_test_generator:
                     if self.stop_requested:
                         self.logger.info(
