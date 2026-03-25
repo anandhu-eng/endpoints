@@ -49,7 +49,10 @@ def _parallel_batch_tokenize(tokenizer: Tokenizer, texts: list[str]) -> list[int
     so threads achieve real parallelism without GIL contention.
     """
 
-    n_cores = os.cpu_count() or 1
+    try:
+        n_cores = len(os.sched_getaffinity(0))
+    except (AttributeError, NotImplementedError):
+        n_cores = os.cpu_count() or 1
     n_workers = max(1, int(n_cores * 0.95))
 
     if len(texts) <= n_workers:
@@ -66,7 +69,7 @@ def _parallel_batch_tokenize(tokenizer: Tokenizer, texts: list[str]) -> list[int
         return [len(ids) for ids in encoded["input_ids"]]
 
     results: list[int] = []
-    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+    with ThreadPoolExecutor(max_workers=min(n_workers, len(chunks))) as pool:
         for chunk_lengths in pool.map(_tokenize_chunk, chunks):
             results.extend(chunk_lengths)
     return results

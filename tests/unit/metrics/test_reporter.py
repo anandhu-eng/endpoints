@@ -15,6 +15,7 @@
 
 import json
 import math
+import os
 
 import msgspec.json
 import pytest
@@ -25,6 +26,7 @@ from inference_endpoint.metrics.reporter import (
     MetricsReporter,
     RollupQueryTable,
     TPOTReportingMode,
+    _parallel_batch_tokenize,
     output_sequence_from_data,
 )
 
@@ -1178,3 +1180,19 @@ class TestOutputSequenceFromData:
         output, reasoning = output_sequence_from_data(b"")
         assert output is None
         assert reasoning is None
+
+
+@pytest.mark.unit
+def test_parallel_batch_tokenize_threaded_path(tokenizer, monkeypatch):
+    """Exercise the threaded branch of _parallel_batch_tokenize.
+
+    Monkeypatches os.sched_getaffinity to return 2 CPUs so the threaded path
+    triggers with a modest number of texts, and verifies ordering and counts.
+    """
+    # Force 4 CPUs so n_workers=3, then provide 5 texts to exceed the
+    # direct-tokenize threshold and exercise the threaded chunking path.
+    monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: {0, 1, 2, 3})
+    texts = ["hello", "ab", "xyz", "a", "test!"]
+    result = _parallel_batch_tokenize(tokenizer, texts)
+    # CharacterTokenizer returns len(text) as token count
+    assert result == [5, 2, 3, 1, 5]
