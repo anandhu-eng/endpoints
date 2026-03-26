@@ -60,7 +60,9 @@ class ConversationState:
             content: Assistant response content.
         """
         self.message_history.append({"role": "assistant", "content": content})
-        self.current_turn = self.pending_user_turn
+        # After assistant responds to turn N, conversation is at turn N+1
+        # (e.g., after user turn 1 + assistant turn 2, we're ready for turn 3)
+        self.current_turn = self.pending_user_turn + 1
         self.pending_user_turn = None
         self.turn_complete_event.set()
 

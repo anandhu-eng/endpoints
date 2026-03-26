@@ -347,7 +347,6 @@ class SchedulerBasedLoadGenerator(LoadGenerator):
                 conversation_id=conv_id,
                 turn_number=turn,
             )
-            sample.conversation_state = conv_state
 
             # Mark turn as issued (in-flight)
             self.conversation_manager.mark_turn_issued(

@@ -92,14 +92,14 @@ class HttpClientSampleIssuer(SampleIssuer):
         # If using extra headers (e.g., Authorization), pre-cache them in
         # worker.py request-template via HttpRequestTemplate.cache_headers()
         # to avoid per-request encoding overhead at runtime.
-        query = Query(id=sample.uuid, data=sample.data)
-
-        # Attach conversation metadata if ConversationSample
+        metadata = {}
         if isinstance(sample, ConversationSample):
-            query._conversation_metadata = {
+            metadata = {
                 "conversation_id": sample.conversation_id,
-                "turn": sample.turn_number,
+                "turn_number": sample.turn_number,
             }
+
+        query = Query(id=sample.uuid, data=sample.data, metadata=metadata)
 
         self.http_client.issue(query)
 

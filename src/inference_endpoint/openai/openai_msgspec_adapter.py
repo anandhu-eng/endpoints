@@ -129,24 +129,37 @@ class OpenAIMsgspecAdapter(HttpRequestAdapter):
         Returns:
             msgspec.Struct ChatCompletionRequest
         """
-        if "prompt" not in query.data:
-            raise ValueError("prompt not found in query.data")
+        if "messages" in query.data and isinstance(query.data["messages"], list):
+            messages = []
+            for message in query.data["messages"]:
+                if not isinstance(message, dict):
+                    raise ValueError("messages entries must be dicts")
+                messages.append(
+                    ChatMessage(
+                        role=message["role"],
+                        content=message["content"],
+                        name=message.get("name"),
+                    )
+                )
+        else:
+            if "prompt" not in query.data:
+                raise ValueError("prompt not found in query.data")
 
-        messages = [
-            ChatMessage(
-                role="user",
-                content=query.data["prompt"],
-                name=query.data.get("name"),
-            ),
-        ]
-        if "system" in query.data:
-            messages.insert(
-                0,
+            messages = [
                 ChatMessage(
-                    role="system",
-                    content=query.data["system"],
+                    role="user",
+                    content=query.data["prompt"],
+                    name=query.data.get("name"),
                 ),
-            )
+            ]
+            if "system" in query.data:
+                messages.insert(
+                    0,
+                    ChatMessage(
+                        role="system",
+                        content=query.data["system"],
+                    ),
+                )
 
         return ChatCompletionRequest(
             model=query.data.get("model", "no-model-name"),

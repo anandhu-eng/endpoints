@@ -519,7 +519,7 @@ class MultiTurnScheduler(Scheduler, load_pattern=LoadPatternType.MULTI_TURN):
         # Get multi_turn_config from runtime_settings
         # For now, use PARALLEL mode as default
         mode = ConversationMode.PARALLEL
-        if hasattr(self.runtime_settings, "multi_turn_config"):
+        if self.runtime_settings.multi_turn_config is not None:
             mode = self.runtime_settings.multi_turn_config.mode
 
         if mode == ConversationMode.PARALLEL:
@@ -539,7 +539,7 @@ class MultiTurnScheduler(Scheduler, load_pattern=LoadPatternType.MULTI_TURN):
             # Step 1: Block on previous turn if needed (turn sequencing)
             if delay_or_sentinel == BLOCK_ON_PREVIOUS_TURN:
                 timeout = 300.0  # Default timeout
-                if hasattr(self.runtime_settings, "multi_turn_config"):
+                if self.runtime_settings.multi_turn_config is not None:
                     timeout = self.runtime_settings.multi_turn_config.turn_timeout_s
 
                 if not self.conversation_manager.wait_for_turn_ready(
@@ -570,9 +570,9 @@ class MultiTurnScheduler(Scheduler, load_pattern=LoadPatternType.MULTI_TURN):
         """
         # Group samples by conversation
         conv_samples = defaultdict(list)
-        for sample_meta in self.dataset_metadata["samples"]:
+        for sample_index, sample_meta in enumerate(self.dataset_metadata["samples"]):
             conv_id = sample_meta["conversation_id"]
-            conv_samples[conv_id].append((sample_meta["index"], sample_meta["turn"]))
+            conv_samples[conv_id].append((sample_index, sample_meta["turn"]))
 
         # Emit all turn-1 samples immediately
         for conv_id, turns in conv_samples.items():
@@ -592,9 +592,9 @@ class MultiTurnScheduler(Scheduler, load_pattern=LoadPatternType.MULTI_TURN):
             (sample_index, delay) pairs where delay is 0 or BLOCK_ON_PREVIOUS_TURN.
         """
         conv_samples = defaultdict(list)
-        for sample_meta in self.dataset_metadata["samples"]:
+        for sample_index, sample_meta in enumerate(self.dataset_metadata["samples"]):
             conv_id = sample_meta["conversation_id"]
-            conv_samples[conv_id].append((sample_meta["index"], sample_meta["turn"]))
+            conv_samples[conv_id].append((sample_index, sample_meta["turn"]))
 
         for conv_id in sorted(conv_samples.keys()):
             turns = sorted(conv_samples[conv_id], key=lambda x: x[1])

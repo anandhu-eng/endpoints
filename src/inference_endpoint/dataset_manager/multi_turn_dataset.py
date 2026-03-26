@@ -15,11 +15,11 @@
 
 """Multi-turn conversation dataset for conversational AI benchmarking."""
 
-from collections import defaultdict
 from typing import Any
 
 import pandas as pd
 
+from ..config.schema import APIType, ModelParams
 from .dataset import Dataset
 
 
@@ -68,6 +68,7 @@ class MultiTurnDataset(Dataset, dataset_id="multi_turn_conversations"):
         super().__init__(dataframe, **kwargs)
         self._validate_conversation_structure()
         self.conversation_metadata = self._build_metadata()
+        self._user_turn_indices: list[int] | None = None
 
     def _validate_conversation_structure(self):
         """Validate conversations are well-formed (alternating user/assistant).
@@ -97,14 +98,16 @@ class MultiTurnDataset(Dataset, dataset_id="multi_turn_conversations"):
         user_turns = self.dataframe[self.dataframe["role"] == "user"]
 
         for idx, row in user_turns.iterrows():
-            samples.append(
-                {
-                    "index": idx,
-                    "conversation_id": row["conversation_id"],
-                    "turn": row["turn"],
-                    "system": row.get("system"),
-                }
-            )
+            sample_meta = {
+                "index": idx,
+                "conversation_id": row["conversation_id"],
+                "turn": row["turn"],
+            }
+            # Only include system if it's a valid string (pandas returns nan for missing values)
+            system_prompt = row.get("system")
+            if system_prompt and isinstance(system_prompt, str):
+                sample_meta["system"] = system_prompt
+            samples.append(sample_meta)
 
         return {
             "samples": samples,
@@ -114,22 +117,54 @@ class MultiTurnDataset(Dataset, dataset_id="multi_turn_conversations"):
             .max(),
         }
 
-    def load_sample(self, index: int) -> dict[str, Any]:
-        """Load sample with conversation metadata.
+    def load(
+        self,
+        adapter=None,
+        api_type: APIType | None = None,
+        model_params: ModelParams | None = None,
+        force: bool = False,
+    ):
+        """Load dataset and build a dense user-turn index.
 
-        Args:
-            index: Row index in dataframe.
-
-        Returns:
-            Dict with conversation_id, turn, role, content, and optional fields.
+        Multi-turn benchmarks only issue user turns. Assistant turns remain in the
+        backing data so the conversation structure can still be validated.
         """
-        row = self.dataframe.iloc[index]
-        return {
+        super().load(
+            adapter=adapter,
+            api_type=None,
+            model_params=None,
+            force=force,
+        )
+
+        assert self.data is not None
+        self._user_turn_indices = [
+            index for index, row in enumerate(self.data) if row["role"] == "user"
+        ]
+
+    def load_sample(self, index: int) -> dict[str, Any]:
+        """Load the Nth user turn as a benchmark sample."""
+        assert self.data is not None, "Dataset not loaded. Call load() first."
+        assert self._user_turn_indices is not None, "Dataset not loaded. Call load() first."
+        row = self.data[self._user_turn_indices[index]]
+
+        # Build sample dict with required fields
+        sample = {
             "conversation_id": row["conversation_id"],
             "turn": row["turn"],
             "role": row["role"],
             "content": row["content"],
-            "system": row.get("system"),
             "model": row.get("model"),
             "max_new_tokens": row.get("max_new_tokens", 128),
+            "stream": row.get("stream", False),
         }
+
+        # Only include system if it's a valid string (pandas returns nan for missing values)
+        system_prompt = row.get("system")
+        if system_prompt and isinstance(system_prompt, str):
+            sample["system"] = system_prompt
+
+        return sample
+
+    def num_samples(self) -> int:
+        assert self._user_turn_indices is not None, "Dataset not loaded. Call load() first."
+        return len(self._user_turn_indices)

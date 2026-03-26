@@ -27,6 +27,16 @@ from .events import SampleEvent
 logger = logging.getLogger(__name__)
 
 
+def _get_conversation_metadata(result: QueryResult) -> tuple[str | None, int | None]:
+    """Extract conversation metadata from QueryResult.metadata."""
+    metadata = result.metadata or {}
+    conv_id = metadata.get("conversation_id")
+    turn_num = metadata.get("turn_number")
+    if turn_num is None:
+        turn_num = metadata.get("turn")
+    return conv_id, turn_num
+
+
 class Sample:
     """Represents a sample/query to be sent to an inference endpoint.
 
@@ -226,8 +236,8 @@ class _SampleEventHandler:
         assert isinstance(result, QueryResult), f"Invalid result type: {type(result)}"
 
         # Update conversation state if multi-turn
-        if self.conversation_manager and hasattr(result, "_conversation_metadata"):
-            conv_id = result._conversation_metadata["conversation_id"]
+        conv_id, turn_num = _get_conversation_metadata(result)
+        if self.conversation_manager and conv_id is not None:
             response_text = result.get_response_output_string()
             self.conversation_manager.mark_turn_complete(conv_id, response_text)
 
@@ -239,11 +249,7 @@ class _SampleEventHandler:
             record_exception(err_str, result.id)
 
         # Extract conversation metadata for event recording
-        conv_id = None
-        turn_num = None
-        if hasattr(result, "_conversation_metadata"):
-            conv_id = result._conversation_metadata.get("conversation_id")
-            turn_num = result._conversation_metadata.get("turn")
+        conv_id, turn_num = _get_conversation_metadata(result)
 
         EventRecorder.record_event(
             SampleEvent.COMPLETE,

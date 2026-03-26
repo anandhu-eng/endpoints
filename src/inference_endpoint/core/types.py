@@ -205,6 +205,7 @@ class Query(
     Attributes:
         id: Unique identifier for this query (auto-generated UUID).
         data: Request payload as a dictionary (typically contains prompt, model, etc.).
+        metadata: Internal metadata that should round-trip through transport.
         headers: HTTP headers to include in the request (e.g., authorization).
         created_at: Timestamp when query was created (seconds since epoch).
 
@@ -228,6 +229,7 @@ class Query(
 
     id: str = msgspec.field(default_factory=lambda: str(uuid.uuid4()))
     data: dict[str, Any] = msgspec.field(default_factory=dict)
+    metadata: dict[str, Any] = msgspec.field(default_factory=dict)
     headers: dict[str, str] = msgspec.field(default_factory=dict)
     created_at: float = msgspec.field(default_factory=time.time)
 

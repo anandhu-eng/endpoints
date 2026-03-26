@@ -53,6 +53,23 @@ from inference_endpoint.utils.logging import setup_logging
 logger = logging.getLogger(__name__)
 
 
+def _merge_query_metadata(
+    result: QueryResult, query_metadata: dict[str, Any] | None
+) -> QueryResult:
+    """Merge transport metadata into a QueryResult without losing adapter metadata."""
+    if not query_metadata:
+        return result
+
+    merged_metadata = dict(result.metadata)
+    merged_metadata.update(query_metadata)
+    return QueryResult(
+        id=result.id,
+        response_output=result.response_output,
+        metadata=merged_metadata,
+        error=result.error,
+    )
+
+
 # Configure multiprocessing to use 'spawn' method for worker creation
 # - 'spawn' starts a fresh Python interpreter for each worker (clean slate)
 # - Slower startup (re-import modules) vs fork's copy-on-write
@@ -382,6 +399,7 @@ class Worker:
             query_id=query.id,
             http_bytes=http_bytes,
             is_streaming=is_streaming,
+            query_metadata=dict(query.metadata),
         )
 
         return req
@@ -396,7 +414,9 @@ class Worker:
         Returns True on success, False on failure (error response sent).
         """
         if self._shutdown:
-            await self._handle_error(req.query_id, "Worker is shutting down")
+            await self._handle_error(
+                req.query_id, "Worker is shutting down", req.query_metadata
+            )
             return False
 
         try:
@@ -412,7 +432,7 @@ class Worker:
             return True
 
         except Exception as e:
-            await self._handle_error(req.query_id, e)
+            await self._handle_error(req.query_id, e, req.query_metadata)
             logger.error(f"Request {req.query_id} failed: {type(e).__name__}: {e}")
             return False
 
@@ -430,6 +450,7 @@ class Worker:
                 await self._handle_error(
                     req.query_id,
                     f"HTTP {status_code}: {error_body.decode('utf-8', errors='replace')}",
+                    req.query_metadata,
                 )
                 return
 
@@ -440,7 +461,7 @@ class Worker:
                 await self._handle_non_streaming_body(req)
 
         except Exception as e:
-            await self._handle_error(req.query_id, e)
+            await self._handle_error(req.query_id, e, req.query_metadata)
             logger.warning(f"Request {req.query_id} failed: {type(e).__name__}: {e}")
 
         finally:
@@ -490,7 +511,9 @@ class Worker:
         self._pool.release(conn)
 
         # Send final complete back to main rank
-        self._responses.send(accumulator.get_final_output())
+        self._responses.send(
+            _merge_query_metadata(accumulator.get_final_output(), req.query_metadata)
+        )
         if self.http_config.record_worker_events:
             EventRecorder.record_event(
                 SampleEvent.ZMQ_RESPONSE_SENT,
@@ -513,6 +536,7 @@ class Worker:
 
         # Decode using adapter
         result = self._adapter.decode_response(response_bytes, query_id)
+        result = _merge_query_metadata(result, req.query_metadata)
 
         # Send result back to main rank
         self._responses.send(result)
@@ -524,7 +548,12 @@ class Worker:
                 assert_active=True,
             )
 
-    async def _handle_error(self, query_id: str, error: Exception | str) -> None:
+    async def _handle_error(
+        self,
+        query_id: str,
+        error: Exception | str,
+        query_metadata: dict[str, Any] | None = None,
+    ) -> None:
         """Send error response for a query."""
         # Skip if we're shutting down or response socket is not available
         if self._shutdown or not self._responses:
@@ -540,6 +569,7 @@ class Worker:
         error_response = QueryResult(
             id=query_id,
             response_output=None,
+            metadata=dict(query_metadata or {}),
             error=error_data,
         )
         self._responses.send(error_response)
