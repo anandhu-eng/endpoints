@@ -17,7 +17,8 @@ import time
 from unittest.mock import patch
 
 import pytest
-from inference_endpoint.core.types import QueryResult, StreamChunk
+from inference_endpoint.core.types import ErrorData, QueryResult, StreamChunk
+from inference_endpoint.load_generator.conversation_manager import ConversationManager
 from inference_endpoint.load_generator.events import SampleEvent
 from inference_endpoint.load_generator.sample import Sample, SampleEventHandler
 
@@ -135,3 +136,30 @@ def test_sample_event_handler_register_hook(record_event_mock):
         StreamChunk(id="123", metadata={"first_chunk": False})
     )
     assert progress_counter == [1, 1]
+
+
+@patch("inference_endpoint.load_generator.sample.record_exception")
+@patch("inference_endpoint.load_generator.sample.EventRecorder.record_event")
+def test_query_result_complete_does_not_advance_conversation_on_error(
+    record_event_mock, record_exception_mock, clean_sample_event_hooks
+):
+    record_event_mock.return_value = None
+    record_exception_mock.return_value = None
+
+    manager = ConversationManager()
+    state = manager.get_or_create("conv_001", None)
+    manager.mark_turn_issued("conv_001", 1, "Hello")
+    SampleEventHandler.set_conversation_manager(manager)
+
+    result = QueryResult(
+        id="123",
+        metadata={"conversation_id": "conv_001", "turn_number": 1},
+        error=ErrorData(error_type="TimeoutError", error_message="request failed"),
+    )
+
+    SampleEventHandler.query_result_complete(result)
+
+    assert state.current_turn == 0
+    assert state.pending_user_turn == 1
+    assert state.message_history == [{"role": "user", "content": "Hello"}]
+    record_exception_mock.assert_called_once()

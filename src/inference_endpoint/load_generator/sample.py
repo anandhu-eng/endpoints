@@ -236,7 +236,7 @@ class _SampleEventHandler:
         assert isinstance(result, QueryResult), f"Invalid result type: {type(result)}"
 
         conv_id, turn_num = _get_conversation_metadata(result)
-        if self.conversation_manager and conv_id is not None:
+        if self.conversation_manager and conv_id is not None and result.error is None:
             response_text = result.get_response_output_string()
             self.conversation_manager.mark_turn_complete(conv_id, response_text)
 

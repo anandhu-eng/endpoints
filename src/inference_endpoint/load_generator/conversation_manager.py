@@ -105,7 +105,8 @@ class ConversationManager:
     def __init__(self):
         """Initialize conversation manager with empty state."""
         self._conversations: dict[str, ConversationState] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._condition = threading.Condition(self._lock)
 
     def get_or_create(
         self, conversation_id: str, system_prompt: str | None
@@ -152,34 +153,26 @@ class ConversationManager:
         Raises:
             KeyError: If conversation_id not found in manager.
         """
-        with self._lock:
+        deadline = None if timeout is None else time.monotonic() + timeout
+
+        with self._condition:
             state = self._conversations.get(conversation_id)
             if state is None:
                 logger.error(f"Conversation {conversation_id} not found in manager")
                 raise KeyError(f"Conversation {conversation_id} not initialized")
 
-        start_time = time.time()
+            while not state.is_ready_for_turn(turn):
+                if deadline is not None:
+                    remaining_timeout = deadline - time.monotonic()
+                    if remaining_timeout <= 0:
+                        return state.is_ready_for_turn(turn)
+                    remaining_timeout = max(MIN_TIMEOUT_SECONDS, remaining_timeout)
+                else:
+                    remaining_timeout = None
 
-        while True:
-            with self._lock:
-                if state.is_ready_for_turn(turn):
-                    return True
+                self._condition.wait(timeout=remaining_timeout)
 
-            if timeout is not None:
-                elapsed = time.time() - start_time
-                if elapsed >= timeout:
-                    # Final check before timing out
-                    with self._lock:
-                        if state.is_ready_for_turn(turn):
-                            return True
-                    return False
-                remaining_timeout = max(MIN_TIMEOUT_SECONDS, timeout - elapsed)
-            else:
-                remaining_timeout = None
-
-            state.turn_complete_event.clear()
-            state.turn_complete_event.wait(timeout=remaining_timeout)
-            # Loop back to check if ready (don't return False immediately)
+            return True
 
     def mark_turn_issued(self, conversation_id: str, turn: int, content: str):
         """Mark that user turn has been issued.
@@ -192,12 +185,11 @@ class ConversationManager:
         Raises:
             KeyError: If conversation_id not found in manager.
         """
-        with self._lock:
+        with self._condition:
             state = self._conversations.get(conversation_id)
             if state is None:
                 raise KeyError(f"Conversation {conversation_id} not initialized")
-
-        state.add_user_turn(turn, content)
+            state.add_user_turn(turn, content)
 
     def mark_turn_complete(self, conversation_id: str, response: str):
         """Mark that assistant response has arrived.
@@ -209,9 +201,9 @@ class ConversationManager:
         Raises:
             KeyError: If conversation_id not found in manager.
         """
-        with self._lock:
+        with self._condition:
             state = self._conversations.get(conversation_id)
             if state is None:
                 raise KeyError(f"Conversation {conversation_id} not initialized")
-
-        state.add_assistant_turn(response)
+            state.add_assistant_turn(response)
+            self._condition.notify_all()

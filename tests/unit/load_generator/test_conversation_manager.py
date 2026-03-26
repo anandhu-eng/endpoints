@@ -398,6 +398,34 @@ def test_conversation_manager_wait_for_turn_ready_multiple_waiters():
 
 
 @pytest.mark.unit
+def test_conversation_manager_wait_for_turn_ready_reliably_wakes_on_completion():
+    """Test completion wakeups do not depend on timing windows between clear/set."""
+    manager = ConversationManager()
+    manager.get_or_create("conv_001", None)
+
+    for _ in range(25):
+        manager.mark_turn_issued("conv_001", 1, "User message")
+
+        start = time.time()
+        ready = []
+
+        def waiter():
+            ready.append(manager.wait_for_turn_ready("conv_001", 3, timeout=0.5))
+
+        wait_thread = threading.Thread(target=waiter, daemon=True)
+        wait_thread.start()
+        time.sleep(0.002)
+        manager.mark_turn_complete("conv_001", "Assistant response")
+        wait_thread.join(timeout=0.2)
+
+        assert ready == [True]
+        assert time.time() - start < 0.2
+
+        manager = ConversationManager()
+        manager.get_or_create("conv_001", None)
+
+
+@pytest.mark.unit
 def test_conversation_state_turn_complete_event_clears():
     """Test turn_complete_event is cleared after being checked."""
     state = ConversationState(conversation_id="conv_001")
