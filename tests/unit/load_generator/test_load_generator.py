@@ -63,7 +63,10 @@ class FibonacciSampleOrder(SampleOrder):
 def test_load_generator(
     load_sample_data_mock, event_recorder_mock, max_throughput_runtime_settings
 ):
-    load_sample_data_mock.side_effect = lambda index, _uuid: index**2
+    # Return dict-like data (consistent with real dataset implementations)
+    load_sample_data_mock.side_effect = lambda index, sample_uuid="placeholder": {
+        "value": index**2
+    }
     event_recorder_mock.return_value = True
 
     class ListAppendIssuer(SampleIssuer):
@@ -86,7 +89,7 @@ def test_load_generator(
     a = 0
     b = 1
     for i, issued_sample in enumerate(load_generator):
-        assert issued_sample.sample.data == a**2
+        assert issued_sample.sample.data == {"value": a**2}
         assert issued_sample.sample == fake_sample_issuer.issued[i]
         assert len(fake_sample_issuer.issued) == i + 1
 
@@ -183,7 +186,9 @@ def test_full_run(record_event_mock):
 )
 def test_max_duration_ms_stops_issuance(load_sample_data_mock, event_recorder_mock):
     """max_duration_ms should stop iteration before n_samples_to_issue is exhausted."""
-    load_sample_data_mock.side_effect = lambda index, _uuid: index
+    load_sample_data_mock.side_effect = lambda index, sample_uuid="placeholder": {
+        "index": index
+    }
     event_recorder_mock.return_value = True
 
     max_duration_ms = 50
@@ -245,7 +250,9 @@ def test_max_duration_ms_stops_issuance_with_poisson_scheduler(
     Uses PoissonDistributionScheduler at low QPS so each inter-sample wait is measurable.
     No sample should be issued after the wall-clock deadline has elapsed.
     """
-    load_sample_data_mock.side_effect = lambda index, _uuid: index
+    load_sample_data_mock.side_effect = lambda index, sample_uuid="placeholder": {
+        "index": index
+    }
     event_recorder_mock.return_value = True
 
     max_duration_ms = 200

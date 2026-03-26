@@ -165,7 +165,7 @@ class LoadGenerator(ABC):
         self.uuid_to_index_map = {}
         return self
 
-    def load_sample_data(self, sample_index: int, sample_uuid: str) -> Any:
+    def load_sample_data(self, sample_index: int, sample_uuid: str = "placeholder") -> Any:
         """Load sample data from dataloader and record event.
 
         Helper method that loads sample data and records the data load event
@@ -173,7 +173,7 @@ class LoadGenerator(ABC):
 
         Args:
             sample_index: Index of sample in dataset.
-            sample_uuid: UUID of the sample being created.
+            sample_uuid: UUID of the sample being created (default: "placeholder").
 
         Returns:
             Sample data loaded from dataloader (format depends on dataset).
@@ -318,8 +318,10 @@ class SchedulerBasedLoadGenerator(LoadGenerator):
         # request beforehand.
         sample_data_raw = self.load_sample_data(s_idx, sample_uuid="placeholder")
 
+        # Check if multi-turn (requires dict-like data with conversation_id)
         if (
-            "conversation_id" in sample_data_raw
+            isinstance(sample_data_raw, dict)
+            and "conversation_id" in sample_data_raw
             and self.conversation_manager is not None
         ):
             # Multi-turn: include conversation history in request
