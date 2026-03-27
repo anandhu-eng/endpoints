@@ -37,6 +37,10 @@ class ConversationState:
         pending_user_turn: Turn number of in-flight user message (None if idle).
         system_prompt: Optional system prompt for conversation.
         turn_complete_event: Threading event to signal turn completion.
+        expected_user_turns: Expected number of user turns (for completion tracking).
+        issued_user_turns: Count of user turns issued.
+        completed_user_turns: Count of user turns with assistant responses.
+        conversation_complete_event: Threading event to signal conversation completion.
     """
 
     conversation_id: str
@@ -45,6 +49,12 @@ class ConversationState:
     pending_user_turn: int | None = None
     system_prompt: str | None = None
     turn_complete_event: threading.Event = field(default_factory=threading.Event)
+    expected_user_turns: int | None = None
+    issued_user_turns: int = 0
+    completed_user_turns: int = 0
+    conversation_complete_event: threading.Event = field(
+        default_factory=threading.Event
+    )
 
     def add_user_turn(self, turn: int, content: str):
         """Add user message and mark as pending.
@@ -55,6 +65,7 @@ class ConversationState:
         """
         self.message_history.append({"role": "user", "content": content})
         self.pending_user_turn = turn
+        self.issued_user_turns += 1
 
     def add_assistant_turn(self, content: str):
         """Add assistant response and mark turn complete.
@@ -68,6 +79,7 @@ class ConversationState:
         if self.pending_user_turn is not None:
             self.current_turn = self.pending_user_turn + 1
             self.pending_user_turn = None
+            self.completed_user_turns += 1
         else:
             # Handle duplicate/orphaned response (response without pending user turn)
             logger.warning(
@@ -76,7 +88,26 @@ class ConversationState:
             )
             # Increment from current position or start at 1 if no turns yet
             self.current_turn = self.current_turn + 1 if self.current_turn > 0 else 1
+
         self.turn_complete_event.set()
+
+        # Check if conversation is now complete
+        if self.is_complete():
+            self.conversation_complete_event.set()
+            logger.debug(
+                f"Conversation {self.conversation_id} completed: "
+                f"{self.completed_user_turns}/{self.expected_user_turns} turns"
+            )
+
+    def is_complete(self) -> bool:
+        """Check if conversation is complete (all turns issued and responses received).
+
+        Returns:
+            True if conversation is complete, False otherwise.
+        """
+        if self.expected_user_turns is None:
+            return False  # Unknown completion, can't determine
+        return self.completed_user_turns >= self.expected_user_turns
 
     def is_ready_for_turn(self, turn: int) -> bool:
         """Check if ready to issue this turn (previous turn must be complete).
@@ -109,13 +140,17 @@ class ConversationManager:
         self._condition = threading.Condition(self._lock)
 
     def get_or_create(
-        self, conversation_id: str, system_prompt: str | None
+        self,
+        conversation_id: str,
+        system_prompt: str | None,
+        expected_user_turns: int | None = None,
     ) -> ConversationState:
         """Get existing or create new conversation state.
 
         Args:
             conversation_id: Unique identifier for conversation.
             system_prompt: Optional system prompt to initialize conversation.
+            expected_user_turns: Expected number of user turns (for completion tracking).
 
         Returns:
             ConversationState for this conversation.
@@ -129,6 +164,10 @@ class ConversationManager:
                     pending_user_turn=None,
                     system_prompt=system_prompt,
                     turn_complete_event=threading.Event(),
+                    expected_user_turns=expected_user_turns,
+                    issued_user_turns=0,
+                    completed_user_turns=0,
+                    conversation_complete_event=threading.Event(),
                 )
                 if system_prompt:
                     state.message_history.append(
@@ -173,6 +212,64 @@ class ConversationManager:
                 self._condition.wait(timeout=remaining_timeout)
 
             return True
+
+    def wait_for_conversation_complete(
+        self, conversation_id: str, timeout: float | None = None
+    ) -> bool:
+        """Block until conversation is complete (all turns issued and responses received).
+
+        Args:
+            conversation_id: Conversation to wait for.
+            timeout: Maximum time to wait in seconds (None = infinite).
+
+        Returns:
+            True if conversation completed, False if timeout.
+        """
+        if conversation_id not in self._conversations:
+            logger.warning(
+                f"Cannot wait for unknown conversation {conversation_id}, returning True"
+            )
+            return True  # Don't block on unknown conversations
+
+        state = self._conversations[conversation_id]
+
+        # Check if already complete
+        if state.is_complete():
+            return True
+
+        # Handle unknown expected_user_turns (can't determine completion)
+        if state.expected_user_turns is None:
+            logger.warning(
+                f"Conversation {conversation_id} has no expected_user_turns, "
+                "cannot wait for completion"
+            )
+            return True  # Don't block if we can't determine completion
+
+        # Wait for completion event with timeout
+        start_time = time.time()
+        while not state.is_complete():
+            remaining_timeout = None
+            if timeout is not None:
+                elapsed = time.time() - start_time
+                remaining_timeout = max(MIN_TIMEOUT_SECONDS, timeout - elapsed)
+                if elapsed >= timeout:
+                    logger.warning(
+                        f"Timeout waiting for conversation {conversation_id} to complete: "
+                        f"{state.completed_user_turns}/{state.expected_user_turns} turns"
+                    )
+                    return False
+
+            if not state.conversation_complete_event.wait(timeout=remaining_timeout):
+                return False  # Timeout
+
+            # Re-check in case of spurious wakeup
+            if state.is_complete():
+                return True
+
+            # Clear event for next wait
+            state.conversation_complete_event.clear()
+
+        return True
 
     def mark_turn_issued(self, conversation_id: str, turn: int, content: str):
         """Mark that user turn has been issued.

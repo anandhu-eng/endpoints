@@ -698,3 +698,114 @@ def test_conversation_manager_race_conditions():
     # but we should not have crashes or deadlocks
     total_operations = sum(operations_completed.values())
     assert total_operations > 0  # At least some operations completed
+
+
+# ============================================================================
+# Test Category 7: Sequential Mode No Overlap Test
+# ============================================================================
+
+
+@pytest.mark.integration
+def test_sequential_no_overlap(small_dataset, endpoint_url):
+    """Test that sequential mode truly waits between conversations (no overlap).
+
+    This test verifies that conversation 2 does not start until conversation 1's
+    final assistant response has completed, ensuring true sequential semantics.
+    """
+    dataset = MultiTurnDataset.load_from_file(small_dataset, format=DatasetFormat.JSONL)
+    dataset.load()
+
+    multi_turn_config = MultiTurnConfig(
+        enabled=True, mode=ConversationMode.SEQUENTIAL, turn_timeout_s=60.0
+    )
+
+    rt_settings = RuntimeSettings(
+        metric_target=metrics.Throughput(10),
+        reported_metrics=[],
+        min_duration_ms=1000,
+        max_duration_ms=120_000,
+        n_samples_from_dataset=dataset.num_samples(),
+        n_samples_to_issue=dataset.num_samples(),
+        min_sample_count=dataset.num_samples(),
+        rng_sched=random.Random(42),
+        rng_sample_index=random.Random(42),
+        load_pattern=LoadPattern(type=LoadPatternType.MULTI_TURN),
+    )
+
+    # Track timing of events
+    event_log = []
+
+    def on_complete_hook(result: QueryResult):
+        metadata = result.metadata or {}
+        conv_id = metadata.get("conversation_id")
+        turn = metadata.get("turn_number") or metadata.get("turn")
+
+        event_log.append(
+            {
+                "type": "response_complete",
+                "conv_id": conv_id,
+                "turn": turn,
+                "timestamp": time.time(),
+            }
+        )
+
+    SampleEventHandler.register_hook(SampleEvent.COMPLETE, on_complete_hook)
+
+    try:
+        conversation_manager = ConversationManager()
+        scheduler = MultiTurnScheduler(
+            rt_settings,
+            WithoutReplacementSampleOrder,
+            conversation_manager,
+            dataset.conversation_metadata,
+            multi_turn_config,
+        )
+        SampleEventHandler.set_conversation_manager(conversation_manager)
+
+        with ManagedZMQContext.scoped() as zmq_ctx:
+            sample_issuer = MultiTurnSampleIssuer(
+                f"{endpoint_url}/v1/chat/completions", zmq_ctx
+            )
+
+            try:
+                sess = BenchmarkSession.start(
+                    rt_settings,
+                    dataset,
+                    sample_issuer,
+                    scheduler,
+                    name="sequential_no_overlap_test",
+                    max_shutdown_timeout_s=120,
+                )
+                sess.wait_for_test_end()
+            finally:
+                sample_issuer.shutdown()
+                sample_issuer.http_client.shutdown()
+
+        # Verify sequential behavior: conv2 events should all come after conv1 events
+        conv1_events = [e for e in event_log if e["conv_id"] == "conv1"]
+        conv2_events = [e for e in event_log if e["conv_id"] == "conv2"]
+
+        assert len(conv1_events) > 0, "No conv1 events recorded"
+        assert len(conv2_events) > 0, "No conv2 events recorded"
+
+        conv1_last_timestamp = max(e["timestamp"] for e in conv1_events)
+        conv2_first_timestamp = min(e["timestamp"] for e in conv2_events)
+
+        # Conv2 should start AFTER conv1's last response completes
+        # Allow small timing tolerance for event recording overhead
+        timing_tolerance = 0.01  # 10ms tolerance
+        assert conv2_first_timestamp >= conv1_last_timestamp - timing_tolerance, (
+            f"Sequential mode violated: Conv2 started at {conv2_first_timestamp:.3f} "
+            f"before conv1 completed at {conv1_last_timestamp:.3f} "
+            f"(overlap of {conv1_last_timestamp - conv2_first_timestamp:.3f}s)"
+        )
+
+        print(
+            f"\n✓ Sequential mode verified: "
+            f"Conv1 completed at {conv1_last_timestamp:.3f}s, "
+            f"Conv2 started at {conv2_first_timestamp:.3f}s "
+            f"(gap: {conv2_first_timestamp - conv1_last_timestamp:.3f}s)"
+        )
+
+    finally:
+        SampleEventHandler.clear_hooks()

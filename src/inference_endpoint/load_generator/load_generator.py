@@ -331,8 +331,18 @@ class SchedulerBasedLoadGenerator(LoadGenerator):
             conv_id = sample_data_raw["conversation_id"]
             turn = sample_data_raw["turn"]
 
+            # Get expected_user_turns from dataset metadata for completion tracking
+            expected_user_turns = None
+            if hasattr(self.dataloader, "conversation_metadata"):
+                user_turns_per_conv = self.dataloader.conversation_metadata.get(
+                    "user_turns_per_conversation", {}
+                )
+                expected_user_turns = user_turns_per_conv.get(conv_id)
+
             conv_state = self.conversation_manager.get_or_create(
-                conv_id, sample_data_raw.get("system")
+                conv_id,
+                sample_data_raw.get("system"),
+                expected_user_turns=expected_user_turns,
             )
 
             messages = conv_state.message_history.copy()

@@ -429,6 +429,9 @@ class ConcurrencyScheduler(Scheduler, load_pattern=LoadPatternType.CONCURRENCY):
 # Sentinel value to signal "block until previous turn completes"
 BLOCK_ON_PREVIOUS_TURN = -1
 
+# Sentinel value to signal "block until previous conversation completes"
+BLOCK_ON_PREVIOUS_CONVERSATION = -2
+
 
 class MultiTurnScheduler(Scheduler, load_pattern=LoadPatternType.MULTI_TURN):
     """Scheduler for multi-turn conversations with turn sequencing and optional concurrency control.
@@ -511,12 +514,14 @@ class MultiTurnScheduler(Scheduler, load_pattern=LoadPatternType.MULTI_TURN):
     def __iter__(self):
         """Iterate with turn sequencing enforcement and optional concurrency control.
 
-        Implements two-level blocking:
+        Implements three-level blocking:
         1. Turn blocking: Turn N+1 waits for turn N to complete
-        2. Concurrency blocking: Wait for available slot if target_concurrency set
+        2. Conversation blocking: Conversation N+1 waits for conversation N to complete
+        3. Concurrency blocking: Wait for available slot if target_concurrency set
 
         Yields (sample_index, delay_ns) pairs where delay_ns may be:
         - BLOCK_ON_PREVIOUS_TURN: Block until previous turn completes
+        - BLOCK_ON_PREVIOUS_CONVERSATION: Block until previous conversation completes
         - 0: Issue immediately
         """
         mode = ConversationMode.PARALLEL
@@ -532,13 +537,16 @@ class MultiTurnScheduler(Scheduler, load_pattern=LoadPatternType.MULTI_TURN):
         else:
             raise ValueError(f"Unknown conversation mode: {mode}")
 
+        previous_conv_id = None  # Track previous conversation for cross-conv blocking
+
         for s_idx, delay_or_sentinel in schedule:
             sample_meta = self.dataset_metadata["samples"][s_idx]
             conv_id = sample_meta["conversation_id"]
             turn = sample_meta["turn"]
 
-            # Step 1: Block on previous turn if needed
+            # Step 1: Handle blocking sentinels
             if delay_or_sentinel == BLOCK_ON_PREVIOUS_TURN:
+                # Block until previous turn in same conversation completes
                 timeout = 300.0
                 if self.multi_turn_config is not None:
                     timeout = self.multi_turn_config.turn_timeout_s
@@ -551,6 +559,28 @@ class MultiTurnScheduler(Scheduler, load_pattern=LoadPatternType.MULTI_TURN):
                     )
                     continue
                 delay_ns = 0
+
+            elif delay_or_sentinel == BLOCK_ON_PREVIOUS_CONVERSATION:
+                # Block until previous conversation fully completes
+                if previous_conv_id is not None:
+                    timeout = 300.0
+                    if self.multi_turn_config is not None:
+                        timeout = self.multi_turn_config.turn_timeout_s
+
+                    logger.debug(
+                        f"Waiting for conversation {previous_conv_id} to complete "
+                        f"before starting {conv_id}"
+                    )
+
+                    if not self.conversation_manager.wait_for_conversation_complete(
+                        previous_conv_id, timeout
+                    ):
+                        logger.warning(
+                            f"Conversation {previous_conv_id} did not complete within "
+                            f"{timeout}s, starting {conv_id} anyway"
+                        )
+                delay_ns = 0
+
             else:
                 delay_ns = delay_or_sentinel
 
@@ -560,6 +590,10 @@ class MultiTurnScheduler(Scheduler, load_pattern=LoadPatternType.MULTI_TURN):
                     while self._inflight >= self._target_concurrency:
                         self._condition.wait()
                     self._inflight += 1
+
+            # Track previous conversation for next iteration
+            if conv_id != previous_conv_id:
+                previous_conv_id = conv_id
 
             yield s_idx, delay_ns
 
@@ -590,20 +624,31 @@ class MultiTurnScheduler(Scheduler, load_pattern=LoadPatternType.MULTI_TURN):
         """Complete conv1, then conv2, etc.
 
         Yields:
-            (sample_index, delay) pairs where delay is 0 or BLOCK_ON_PREVIOUS_TURN.
+            (sample_index, delay) pairs where delay is 0, BLOCK_ON_PREVIOUS_TURN,
+            or BLOCK_ON_PREVIOUS_CONVERSATION.
         """
         conv_samples = defaultdict(list)
         for sample_index, sample_meta in enumerate(self.dataset_metadata["samples"]):
             conv_id = sample_meta["conversation_id"]
             conv_samples[conv_id].append((sample_index, sample_meta["turn"]))
 
+        previous_conv_id = None
         for conv_id in sorted(conv_samples.keys()):
             turns = sorted(conv_samples[conv_id], key=lambda x: x[1])
             for i, (idx, _turn) in enumerate(turns):
                 if i == 0:
-                    yield idx, 0  # First turn of conversation
+                    # First turn of conversation
+                    if previous_conv_id is None:
+                        # Very first conversation, no wait needed
+                        yield idx, 0
+                    else:
+                        # Wait for previous conversation to complete
+                        yield idx, BLOCK_ON_PREVIOUS_CONVERSATION
                 else:
+                    # Subsequent turn within conversation
                     yield idx, BLOCK_ON_PREVIOUS_TURN
+
+            previous_conv_id = conv_id  # Track for next conversation
 
     def _poisson_schedule(self):
         """Start conversations with Poisson arrival, sequence turns within.

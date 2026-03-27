@@ -447,3 +447,156 @@ def test_conversation_state_turn_complete_event_clears():
     state.add_user_turn(2, "User message 2")
     state.add_assistant_turn("Assistant response 2")
     assert state.turn_complete_event.is_set()
+
+
+@pytest.mark.unit
+def test_conversation_completion_tracking():
+    """Test conversation completion detection."""
+    manager = ConversationManager()
+
+    # Create conversation with 2 expected user turns
+    state = manager.get_or_create("conv_001", "system", expected_user_turns=2)
+
+    assert not state.is_complete()
+    assert state.issued_user_turns == 0
+    assert state.completed_user_turns == 0
+    assert state.expected_user_turns == 2
+
+    # Issue turn 1
+    manager.mark_turn_issued("conv_001", 1, "message 1")
+    assert state.issued_user_turns == 1
+    assert not state.is_complete()
+
+    # Complete turn 1
+    manager.mark_turn_complete("conv_001", "response 1")
+    assert state.completed_user_turns == 1
+    assert not state.is_complete()
+
+    # Issue turn 3
+    manager.mark_turn_issued("conv_001", 3, "message 2")
+    assert state.issued_user_turns == 2
+    assert not state.is_complete()
+
+    # Complete turn 3 - should mark conversation complete
+    manager.mark_turn_complete("conv_001", "response 2")
+    assert state.completed_user_turns == 2
+    assert state.is_complete()
+    assert state.conversation_complete_event.is_set()
+
+
+@pytest.mark.unit
+def test_conversation_completion_without_expected_turns():
+    """Test that completion tracking works when expected_user_turns is None."""
+    manager = ConversationManager()
+
+    # Create conversation without expected_user_turns
+    state = manager.get_or_create("conv_001", "system", expected_user_turns=None)
+
+    assert not state.is_complete()  # Can't determine completion without expected count
+    assert state.expected_user_turns is None
+
+    # Complete some turns
+    manager.mark_turn_issued("conv_001", 1, "message 1")
+    manager.mark_turn_complete("conv_001", "response 1")
+
+    # Should still not be complete
+    assert not state.is_complete()
+
+
+@pytest.mark.unit
+def test_wait_for_conversation_complete():
+    """Test waiting for conversation to complete."""
+    manager = ConversationManager()
+    state = manager.get_or_create("conv_001", "system", expected_user_turns=2)
+
+    # Start background thread to complete conversation
+    def complete_conversation():
+        time.sleep(0.1)
+        manager.mark_turn_issued("conv_001", 1, "msg1")
+        manager.mark_turn_complete("conv_001", "resp1")
+        time.sleep(0.1)
+        manager.mark_turn_issued("conv_001", 3, "msg2")
+        manager.mark_turn_complete("conv_001", "resp2")
+
+    thread = threading.Thread(target=complete_conversation)
+    thread.start()
+
+    # Wait should succeed
+    result = manager.wait_for_conversation_complete("conv_001", timeout=5.0)
+    assert result is True
+    assert state.is_complete()
+
+    thread.join()
+
+
+@pytest.mark.unit
+def test_wait_for_conversation_complete_timeout():
+    """Test timeout when waiting for conversation."""
+    manager = ConversationManager()
+    manager.get_or_create("conv_001", "system", expected_user_turns=2)
+
+    # Only complete 1 turn, leave conversation incomplete
+    manager.mark_turn_issued("conv_001", 1, "msg1")
+    manager.mark_turn_complete("conv_001", "resp1")
+
+    # Wait should timeout
+    result = manager.wait_for_conversation_complete("conv_001", timeout=0.5)
+    assert result is False
+
+
+@pytest.mark.unit
+def test_wait_for_conversation_complete_already_done():
+    """Test waiting for already completed conversation returns immediately."""
+    manager = ConversationManager()
+    state = manager.get_or_create("conv_001", "system", expected_user_turns=1)
+
+    # Complete the conversation
+    manager.mark_turn_issued("conv_001", 1, "msg1")
+    manager.mark_turn_complete("conv_001", "resp1")
+    assert state.is_complete()
+
+    # Wait should return immediately
+    start = time.time()
+    result = manager.wait_for_conversation_complete("conv_001", timeout=5.0)
+    elapsed = time.time() - start
+
+    assert result is True
+    assert elapsed < 0.1  # Should be nearly instant
+
+
+@pytest.mark.unit
+def test_wait_for_conversation_complete_unknown_conversation():
+    """Test waiting for unknown conversation returns True (no blocking)."""
+    manager = ConversationManager()
+
+    # Wait for conversation that doesn't exist
+    result = manager.wait_for_conversation_complete("unknown_conv", timeout=1.0)
+    assert result is True  # Should not block
+
+
+@pytest.mark.unit
+def test_wait_for_conversation_complete_no_expected_turns():
+    """Test waiting for conversation without expected_user_turns returns True."""
+    manager = ConversationManager()
+    manager.get_or_create("conv_001", "system", expected_user_turns=None)
+
+    # Wait should return immediately (can't determine completion)
+    result = manager.wait_for_conversation_complete("conv_001", timeout=1.0)
+    assert result is True
+
+
+@pytest.mark.unit
+def test_conversation_completion_event_fired():
+    """Test that conversation_complete_event is fired when conversation completes."""
+    manager = ConversationManager()
+    state = manager.get_or_create("conv_001", "system", expected_user_turns=1)
+
+    assert not state.conversation_complete_event.is_set()
+
+    # Complete the single turn
+    manager.mark_turn_issued("conv_001", 1, "msg")
+    manager.mark_turn_complete("conv_001", "resp")
+
+    # Event should be set
+    assert state.conversation_complete_event.is_set()
+    assert state.is_complete()

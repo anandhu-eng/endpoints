@@ -93,11 +93,15 @@ class MultiTurnDataset(Dataset, dataset_id="multi_turn_conversations"):
         """Build metadata for scheduler (maps sample index to conversation context).
 
         Returns:
-            Metadata dict with samples list, num_conversations, and max_turns_per_conv.
+            Metadata dict with samples list, num_conversations, max_turns_per_conv,
+            and user_turns_per_conversation.
         """
         assert self.dataframe is not None, "Dataframe must be initialized"
         samples = []
         user_turns = self.dataframe[self.dataframe["role"] == "user"]
+
+        # Count user turns per conversation for completion tracking
+        user_turns_per_conv = user_turns.groupby("conversation_id").size().to_dict()
 
         for idx, row in user_turns.iterrows():
             sample_meta = {
@@ -117,6 +121,7 @@ class MultiTurnDataset(Dataset, dataset_id="multi_turn_conversations"):
             "max_turns_per_conv": self.dataframe.groupby("conversation_id")["turn"]
             .max()
             .max(),
+            "user_turns_per_conversation": user_turns_per_conv,
         }
 
     def load(
@@ -133,8 +138,8 @@ class MultiTurnDataset(Dataset, dataset_id="multi_turn_conversations"):
         """
         super().load(
             adapter=adapter,
-            api_type=None,
-            model_params=None,
+            api_type=api_type,
+            model_params=model_params,
             force=force,
         )
 
