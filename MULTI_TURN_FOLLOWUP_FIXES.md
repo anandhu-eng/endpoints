@@ -47,22 +47,25 @@ GENERATION_PARAMS = {
 
 #### Changes to `load_generator.py`
 
-Modified `__next__()` to forward all sample fields generically:
+Modified `__next__()` to forward all sample fields generically, skipping None values:
 
 ```python
 # Build request data - start with messages
 request_data = {"messages": messages}
 
 # Forward all generation parameters from sample_data_raw
+# Skip None values to let defaults be applied
 exclude_fields = {"conversation_id", "turn", "role", "content", "system"}
 for key, value in sample_data_raw.items():
-    if key not in exclude_fields:
+    if key not in exclude_fields and value is not None:
         request_data[key] = value
 
 # Handle max_new_tokens -> max_completion_tokens mapping
 if "max_new_tokens" in request_data and "max_completion_tokens" not in request_data:
     request_data["max_completion_tokens"] = request_data.pop("max_new_tokens")
 ```
+
+**Critical Fix**: Skip None values when forwarding to prevent "no-model-name" error when model field is None.
 
 ### Phase 2: Fix Sequential Mode Error Handling
 
@@ -172,10 +175,11 @@ if self.conversation_manager and conv_id is not None:
 
    - 4 new failure tracking tests
 
-7. **tests/integration/test_multi_turn.py** (+2 lines, -2 lines)
+7. **tests/integration/test_multi_turn.py** (+14 lines, -11 lines)
    - Fixed conversation ID references in test_sequential_no_overlap
+   - Added "model" field to test fixtures to prevent "no-model-name" errors
 
-**Total**: +305 lines, -18 lines
+**Total**: +317 lines, -21 lines
 
 ## Backward Compatibility
 

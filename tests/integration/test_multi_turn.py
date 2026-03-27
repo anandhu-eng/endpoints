@@ -62,6 +62,9 @@ from inference_endpoint.load_generator.scheduler import MultiTurnScheduler
 # Shared Fixtures
 # ============================================================================
 
+# Model name for integration tests
+TEST_MODEL_NAME = "meta-llama/Llama-3.2-1B-Instruct"
+
 
 @pytest.fixture
 def endpoint_url() -> str:
@@ -79,7 +82,7 @@ def small_dataset() -> Generator[str, None, None]:
             "role": "user",
             "content": "Hello, I need help with Python",
             "system": "You are a helpful programming assistant",
-            "model": "meta-llama/Llama-3.2-1B-Instruct",
+            "model": TEST_MODEL_NAME,
         },
         {
             "conversation_id": "test_conv_001",
@@ -92,14 +95,14 @@ def small_dataset() -> Generator[str, None, None]:
             "turn": 3,
             "role": "user",
             "content": "How do I read a file?",
-            "model": "meta-llama/Llama-3.2-1B-Instruct",
+            "model": TEST_MODEL_NAME,
         },
         {
             "conversation_id": "test_conv_002",
             "turn": 1,
             "role": "user",
             "content": "What is machine learning?",
-            "model": "meta-llama/Llama-3.2-1B-Instruct",
+            "model": TEST_MODEL_NAME,
         },
         {
             "conversation_id": "test_conv_002",
@@ -112,7 +115,7 @@ def small_dataset() -> Generator[str, None, None]:
             "turn": 3,
             "role": "user",
             "content": "Can you give an example?",
-            "model": "meta-llama/Llama-3.2-1B-Instruct",
+            "model": TEST_MODEL_NAME,
         },
     ]
 
@@ -450,7 +453,7 @@ def test_large_scale(
                     if turn_idx == 0
                     else None,
                     "max_new_tokens": 16 if num_conversations > 100 else 32,
-                    "model": "meta-llama/Llama-3.2-1B-Instruct",
+                    "model": TEST_MODEL_NAME,
                 }
             )
 
