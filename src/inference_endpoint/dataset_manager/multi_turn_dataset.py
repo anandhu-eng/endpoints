@@ -22,6 +22,22 @@ import pandas as pd
 from ..config.schema import APIType, ModelParams
 from .dataset import Dataset
 
+# Known generation parameter fields to forward from dataset to API requests
+GENERATION_PARAMS = {
+    "model",
+    "max_new_tokens",
+    "max_completion_tokens",
+    "stream",
+    "temperature",
+    "top_p",
+    "top_k",
+    "repetition_penalty",
+    "frequency_penalty",
+    "presence_penalty",
+    "stop",
+    "seed",
+}
+
 
 class MultiTurnDataset(Dataset, dataset_id="multi_turn_conversations"):
     """Dataset for multi-turn conversations.
@@ -156,16 +172,29 @@ class MultiTurnDataset(Dataset, dataset_id="multi_turn_conversations"):
         ), "Dataset not loaded. Call load() first."
         row = self.data[self._user_turn_indices[index]]
 
-        # Build sample dict with required fields
+        # Build base sample with required fields
         sample = {
             "conversation_id": row["conversation_id"],
             "turn": row["turn"],
             "role": row["role"],
             "content": row["content"],
-            "model": row.get("model"),
-            "max_new_tokens": row.get("max_new_tokens", 128),
-            "stream": row.get("stream", False),
         }
+
+        # Forward all generation parameters that exist in row
+        for param in GENERATION_PARAMS:
+            if param in row:
+                value = row[param]
+                # Skip pandas NaN/None values
+                if value is not None and (
+                    not isinstance(value, float) or not pd.isna(value)
+                ):
+                    sample[param] = value
+
+        # Set defaults for critical params if not present
+        if "max_new_tokens" not in sample and "max_completion_tokens" not in sample:
+            sample["max_new_tokens"] = 128
+        if "stream" not in sample:
+            sample["stream"] = False
 
         # Only include system if it's a valid string (pandas returns nan for missing values)
         system_prompt = row.get("system")

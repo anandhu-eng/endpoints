@@ -600,3 +600,102 @@ def test_conversation_completion_event_fired():
     # Event should be set
     assert state.conversation_complete_event.is_set()
     assert state.is_complete()
+
+
+@pytest.mark.unit
+def test_conversation_completion_with_failures():
+    """Test that conversations complete even when turns fail."""
+    manager = ConversationManager()
+    state = manager.get_or_create("conv1", None, expected_user_turns=3)
+
+    # Turn 1: success
+    manager.mark_turn_issued("conv1", 1, "Hello")
+    manager.mark_turn_complete("conv1", "Hi there")
+    assert state.completed_user_turns == 1
+    assert state.failed_user_turns == 0
+    assert not state.is_complete()
+
+    # Turn 2: failure
+    manager.mark_turn_issued("conv1", 2, "How are you?")
+    manager.mark_turn_failed("conv1")
+    assert state.completed_user_turns == 2
+    assert state.failed_user_turns == 1
+    assert not state.is_complete()
+
+    # Turn 3: success
+    manager.mark_turn_issued("conv1", 3, "Goodbye")
+    manager.mark_turn_complete("conv1", "Bye!")
+    assert state.completed_user_turns == 3
+    assert state.failed_user_turns == 1
+    assert state.is_complete()
+
+    # Check message history has error placeholder
+    assert (
+        len(state.message_history) == 6
+    )  # user, assistant, user, [ERROR], user, assistant
+    assert "[ERROR:" in state.message_history[3]["content"]
+
+
+@pytest.mark.unit
+def test_wait_for_conversation_complete_with_failures():
+    """Test waiting for completion when some turns fail."""
+    manager = ConversationManager()
+    state = manager.get_or_create("conv1", None, expected_user_turns=2)
+
+    def complete_with_failure():
+        time.sleep(0.1)
+        manager.mark_turn_issued("conv1", 1, "Hello")
+        manager.mark_turn_failed("conv1")  # First turn fails
+        time.sleep(0.05)
+        manager.mark_turn_issued("conv1", 2, "Retry")
+        manager.mark_turn_complete("conv1", "Success")
+
+    thread = threading.Thread(target=complete_with_failure)
+    thread.start()
+
+    # Should complete even with one failure
+    result = manager.wait_for_conversation_complete("conv1", timeout=2.0)
+    thread.join()
+
+    assert result is True
+    assert state.completed_user_turns == 2
+    assert state.failed_user_turns == 1
+
+
+@pytest.mark.unit
+def test_mark_turn_failed_with_no_pending():
+    """Test that marking failed turn without pending turn logs warning."""
+    manager = ConversationManager()
+    state = manager.get_or_create("conv1", None, expected_user_turns=1)
+
+    # Try to mark failed without issuing turn first
+    manager.mark_turn_failed("conv1")
+
+    # Should not crash, but state should be unchanged
+    assert state.completed_user_turns == 0
+    assert state.failed_user_turns == 0
+
+
+@pytest.mark.unit
+def test_all_turns_fail():
+    """Test conversation completion when all turns fail."""
+    manager = ConversationManager()
+    state = manager.get_or_create("conv1", None, expected_user_turns=2)
+
+    # Turn 1: failure
+    manager.mark_turn_issued("conv1", 1, "Hello")
+    manager.mark_turn_failed("conv1")
+
+    # Turn 2: failure
+    manager.mark_turn_issued("conv1", 2, "Retry")
+    manager.mark_turn_failed("conv1")
+
+    # Should be complete even though all failed
+    assert state.is_complete()
+    assert state.completed_user_turns == 2
+    assert state.failed_user_turns == 2
+
+    # Message history should have 4 entries: user, [ERROR], user, [ERROR]
+    assert len(state.message_history) == 4
+    assert "[ERROR:" in state.message_history[1]["content"]
+    assert "[ERROR:" in state.message_history[3]["content"]

@@ -348,13 +348,28 @@ class SchedulerBasedLoadGenerator(LoadGenerator):
             messages = conv_state.message_history.copy()
             messages.append({"role": "user", "content": sample_data_raw["content"]})
 
+            # Build request data - start with messages
+            request_data = {"messages": messages}
+
+            # Forward all generation parameters from sample_data_raw
+            # Exclude conversation-specific fields (conversation_id, turn, role, content, system)
+            # Skip None values to let defaults be applied
+            exclude_fields = {"conversation_id", "turn", "role", "content", "system"}
+            for key, value in sample_data_raw.items():
+                if key not in exclude_fields and value is not None:
+                    request_data[key] = value
+
+            # Handle max_new_tokens -> max_completion_tokens mapping if needed
+            if (
+                "max_new_tokens" in request_data
+                and "max_completion_tokens" not in request_data
+            ):
+                request_data["max_completion_tokens"] = request_data.pop(
+                    "max_new_tokens"
+                )
+
             sample = ConversationSample(
-                data={
-                    "messages": messages,
-                    "model": sample_data_raw.get("model"),
-                    "max_completion_tokens": sample_data_raw.get("max_new_tokens", 128),
-                    "stream": sample_data_raw.get("stream", False),
-                },
+                data=request_data,
                 conversation_id=conv_id,
                 turn_number=turn,
             )

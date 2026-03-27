@@ -40,6 +40,7 @@ class ConversationState:
         expected_user_turns: Expected number of user turns (for completion tracking).
         issued_user_turns: Count of user turns issued.
         completed_user_turns: Count of user turns with assistant responses.
+        failed_user_turns: Count of user turns that failed (error/timeout).
         conversation_complete_event: Threading event to signal conversation completion.
     """
 
@@ -52,6 +53,7 @@ class ConversationState:
     expected_user_turns: int | None = None
     issued_user_turns: int = 0
     completed_user_turns: int = 0
+    failed_user_turns: int = 0
     conversation_complete_event: threading.Event = field(
         default_factory=threading.Event
     )
@@ -68,7 +70,7 @@ class ConversationState:
         self.issued_user_turns += 1
 
     def add_assistant_turn(self, content: str):
-        """Add assistant response and mark turn complete.
+        """Add assistant response and mark turn complete (success).
 
         Args:
             content: Assistant response content.
@@ -94,9 +96,56 @@ class ConversationState:
         # Check if conversation is now complete
         if self.is_complete():
             self.conversation_complete_event.set()
-            logger.debug(
-                f"Conversation {self.conversation_id} completed: "
-                f"{self.completed_user_turns}/{self.expected_user_turns} turns"
+            if self.failed_user_turns > 0:
+                logger.info(
+                    f"Conversation {self.conversation_id} completed with failures: "
+                    f"{self.completed_user_turns - self.failed_user_turns}/"
+                    f"{self.expected_user_turns} successful, "
+                    f"{self.failed_user_turns} failed"
+                )
+            else:
+                logger.debug(
+                    f"Conversation {self.conversation_id} completed: "
+                    f"{self.completed_user_turns}/{self.expected_user_turns} turns"
+                )
+
+    def mark_turn_failed(self):
+        """Mark turn as failed (error/timeout) - still counts as completed for sequencing.
+
+        Failed turns count toward conversation completion to ensure sequential mode
+        progresses even when turns fail. An error placeholder is added to message
+        history to maintain context for subsequent turns.
+        """
+        if self.pending_user_turn is not None:
+            self.current_turn = self.pending_user_turn + 1
+            self.pending_user_turn = None
+            self.completed_user_turns += 1
+            self.failed_user_turns += 1
+
+            # Add placeholder to message history for future turn context
+            self.message_history.append(
+                {"role": "assistant", "content": "[ERROR: Turn failed or timed out]"}
+            )
+
+            logger.warning(
+                f"Turn {self.current_turn - 1} failed for conversation {self.conversation_id}"
+            )
+        else:
+            logger.warning(
+                f"Attempted to mark failed turn for {self.conversation_id} "
+                f"with no pending user turn"
+            )
+
+        self.turn_complete_event.set()
+
+        # Check if conversation is now complete
+        if self.is_complete():
+            self.conversation_complete_event.set()
+            logger.info(
+                f"Conversation {self.conversation_id} completed with failures: "
+                f"{self.completed_user_turns - self.failed_user_turns}/"
+                f"{self.expected_user_turns} successful, "
+                f"{self.failed_user_turns} failed"
             )
 
     def is_complete(self) -> bool:
@@ -167,6 +216,7 @@ class ConversationManager:
                     expected_user_turns=expected_user_turns,
                     issued_user_turns=0,
                     completed_user_turns=0,
+                    failed_user_turns=0,
                     conversation_complete_event=threading.Event(),
                 )
                 if system_prompt:
@@ -303,4 +353,23 @@ class ConversationManager:
             if state is None:
                 raise KeyError(f"Conversation {conversation_id} not initialized")
             state.add_assistant_turn(response)
+            self._condition.notify_all()
+
+    def mark_turn_failed(self, conversation_id: str):
+        """Mark that assistant response failed (error/timeout).
+
+        Failed turns still count toward conversation completion to ensure
+        sequential mode progresses even under errors.
+
+        Args:
+            conversation_id: Conversation ID.
+
+        Raises:
+            KeyError: If conversation_id not found in manager.
+        """
+        with self._condition:
+            state = self._conversations.get(conversation_id)
+            if state is None:
+                raise KeyError(f"Conversation {conversation_id} not initialized")
+            state.mark_turn_failed()
             self._condition.notify_all()

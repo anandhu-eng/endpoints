@@ -236,9 +236,30 @@ class _SampleEventHandler:
         assert isinstance(result, QueryResult), f"Invalid result type: {type(result)}"
 
         conv_id, turn_num = _get_conversation_metadata(result)
-        if self.conversation_manager and conv_id is not None and result.error is None:
-            response_text = result.get_response_output_string()
-            self.conversation_manager.mark_turn_complete(conv_id, response_text)
+
+        # Update conversation state based on success/failure
+        if self.conversation_manager and conv_id is not None:
+            if result.error is None:
+                # Success: mark turn complete with response
+                try:
+                    response_text = result.get_response_output_string()
+                    self.conversation_manager.mark_turn_complete(conv_id, response_text)
+                except KeyError:
+                    logger.warning(
+                        f"Cannot mark turn complete for unknown conversation {conv_id}"
+                    )
+            else:
+                # Failure: mark turn failed so conversation can progress
+                try:
+                    self.conversation_manager.mark_turn_failed(conv_id)
+                    logger.info(
+                        f"Marked turn as failed for conversation {conv_id}: "
+                        f"error={result.error}"
+                    )
+                except KeyError:
+                    logger.warning(
+                        f"Cannot mark failed turn for unknown conversation {conv_id}"
+                    )
 
         if result.error is not None:
             err_str = str(result.error)
