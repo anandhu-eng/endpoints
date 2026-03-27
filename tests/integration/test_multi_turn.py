@@ -32,6 +32,8 @@ import time
 from collections import defaultdict
 from collections.abc import Generator
 from pathlib import Path
+from urllib.request import urlopen
+from urllib.error import URLError
 
 import pytest
 from inference_endpoint import metrics
@@ -55,6 +57,7 @@ from inference_endpoint.load_generator import (
     SampleEventHandler,
     WithoutReplacementSampleOrder,
 )
+from inference_endpoint.dataset_manager.transforms import AddStaticColumns
 from inference_endpoint.load_generator.conversation_manager import ConversationManager
 from inference_endpoint.load_generator.scheduler import MultiTurnScheduler
 
@@ -62,14 +65,28 @@ from inference_endpoint.load_generator.scheduler import MultiTurnScheduler
 # Shared Fixtures
 # ============================================================================
 
-# Model name for integration tests
-TEST_MODEL_NAME = "meta-llama/Llama-3.2-1B-Instruct"
-
 
 @pytest.fixture
 def endpoint_url() -> str:
     """Endpoint URL for integration tests."""
     return "http://localhost:8868"
+
+
+@pytest.fixture
+def multi_turn_model_name(endpoint_url) -> str:
+    """Query model name from the endpoint instead of hardcoding."""
+    try:
+        with urlopen(f"{endpoint_url}/v1/models", timeout=5.0) as response:
+            models_data = json.loads(response.read())
+
+        # OpenAI-compatible endpoints return {"data": [{"id": "model-name", ...}, ...]}
+        if "data" in models_data and len(models_data["data"]) > 0:
+            return models_data["data"][0]["id"]
+
+        # Fallback if response format is different
+        raise ValueError(f"Unexpected /v1/models response format: {models_data}")
+    except (URLError, ValueError, KeyError) as e:
+        pytest.skip(f"Could not query model name from endpoint {endpoint_url}: {e}")
 
 
 @pytest.fixture
@@ -82,7 +99,6 @@ def small_dataset() -> Generator[str, None, None]:
             "role": "user",
             "content": "Hello, I need help with Python",
             "system": "You are a helpful programming assistant",
-            "model": TEST_MODEL_NAME,
         },
         {
             "conversation_id": "test_conv_001",
@@ -95,14 +111,12 @@ def small_dataset() -> Generator[str, None, None]:
             "turn": 3,
             "role": "user",
             "content": "How do I read a file?",
-            "model": TEST_MODEL_NAME,
         },
         {
             "conversation_id": "test_conv_002",
             "turn": 1,
             "role": "user",
             "content": "What is machine learning?",
-            "model": TEST_MODEL_NAME,
         },
         {
             "conversation_id": "test_conv_002",
@@ -115,7 +129,6 @@ def small_dataset() -> Generator[str, None, None]:
             "turn": 3,
             "role": "user",
             "content": "Can you give an example?",
-            "model": TEST_MODEL_NAME,
         },
     ]
 
@@ -156,9 +169,13 @@ class MultiTurnSampleIssuer(HttpClientSampleIssuer):
         ),  # Complete conv1 then conv2
     ],
 )
-def test_basic_end_to_end(small_dataset, endpoint_url, mode, expected_completions):
+def test_basic_end_to_end(small_dataset, endpoint_url, mode, expected_completions, multi_turn_model_name):
     """Test basic end-to-end multi-turn benchmarking with different modes."""
-    dataset = MultiTurnDataset.load_from_file(small_dataset, format=DatasetFormat.JSONL)
+    dataset = MultiTurnDataset.load_from_file(
+        small_dataset,
+        format=DatasetFormat.JSONL,
+        transforms=[AddStaticColumns({"model": multi_turn_model_name})],
+    )
     dataset.load()
 
     multi_turn_config = MultiTurnConfig(enabled=True, mode=mode, turn_timeout_s=60.0)
@@ -244,9 +261,13 @@ def test_basic_end_to_end(small_dataset, endpoint_url, mode, expected_completion
 
 
 @pytest.mark.integration
-def test_message_history_accumulation(small_dataset, endpoint_url):
+def test_message_history_accumulation(small_dataset, endpoint_url, multi_turn_model_name):
     """Test that message history accumulates correctly across turns."""
-    dataset = MultiTurnDataset.load_from_file(small_dataset, format=DatasetFormat.JSONL)
+    dataset = MultiTurnDataset.load_from_file(
+        small_dataset,
+        format=DatasetFormat.JSONL,
+        transforms=[AddStaticColumns({"model": multi_turn_model_name})],
+    )
     dataset.load()
 
     multi_turn_config = MultiTurnConfig(
@@ -328,9 +349,13 @@ def test_message_history_accumulation(small_dataset, endpoint_url):
         pytest.param(128, id="concurrency_128_high"),
     ],
 )
-def test_concurrency_control(small_dataset, endpoint_url, target_concurrency):
+def test_concurrency_control(small_dataset, endpoint_url, target_concurrency, multi_turn_model_name):
     """Test multi-turn benchmarking with varying concurrency levels."""
-    dataset = MultiTurnDataset.load_from_file(small_dataset, format=DatasetFormat.JSONL)
+    dataset = MultiTurnDataset.load_from_file(
+        small_dataset,
+        format=DatasetFormat.JSONL,
+        transforms=[AddStaticColumns({"model": multi_turn_model_name})],
+    )
     dataset.load()
 
     multi_turn_config = MultiTurnConfig(
@@ -421,6 +446,7 @@ def test_large_scale(
     num_workers,
     completion_threshold,
     concurrency,
+    multi_turn_model_name,
 ):
     """Test multi-turn benchmarking at scale with varying conversation counts.
 
@@ -429,6 +455,7 @@ def test_large_scale(
         num_workers: Number of worker processes
         completion_threshold: Minimum fraction of conversations that must complete
         concurrency: Optional concurrency limit (None = unlimited)
+        multi_turn_model_name: Model name from pytest fixture
     """
     turns_per_conversation = 3
 
@@ -453,8 +480,7 @@ def test_large_scale(
                     if turn_idx == 0
                     else None,
                     "max_new_tokens": 16 if num_conversations > 100 else 32,
-                    "model": TEST_MODEL_NAME,
-                }
+                        }
             )
 
             # Assistant placeholder
@@ -473,7 +499,9 @@ def test_large_scale(
 
     # Load dataset
     dataset = MultiTurnDataset.load_from_file(
-        str(dataset_path), format=DatasetFormat.JSONL
+        str(dataset_path),
+        format=DatasetFormat.JSONL,
+        transforms=[AddStaticColumns({"model": multi_turn_model_name})],
     )
     dataset.load()
 
@@ -714,13 +742,17 @@ def test_conversation_manager_race_conditions():
 
 
 @pytest.mark.integration
-def test_sequential_no_overlap(small_dataset, endpoint_url):
+def test_sequential_no_overlap(small_dataset, endpoint_url, multi_turn_model_name):
     """Test that sequential mode truly waits between conversations (no overlap).
 
     This test verifies that conversation 2 does not start until conversation 1's
     final assistant response has completed, ensuring true sequential semantics.
     """
-    dataset = MultiTurnDataset.load_from_file(small_dataset, format=DatasetFormat.JSONL)
+    dataset = MultiTurnDataset.load_from_file(
+        small_dataset,
+        format=DatasetFormat.JSONL,
+        transforms=[AddStaticColumns({"model": multi_turn_model_name})],
+    )
     dataset.load()
 
     multi_turn_config = MultiTurnConfig(
