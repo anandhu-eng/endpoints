@@ -42,6 +42,8 @@ def test_event_row_to_table_query():
     assert "event_type TEXT" in query
     assert "timestamp_ns INTEGER" in query
     assert "data BLOB" in query
+    assert "conversation_id TEXT" in query
+    assert "turn_number INTEGER" in query
 
     # Verify the query is valid SQL by executing it
     conn = sqlite3.connect(":memory:")
@@ -60,8 +62,11 @@ def test_event_row_to_table_query():
     assert "event_type" in column_info
     assert "timestamp_ns" in column_info
     assert "data" in column_info
+    assert "conversation_id" in column_info
+    assert "turn_number" in column_info
     assert column_info["timestamp_ns"] == "INTEGER"
     assert column_info["data"] == "BLOB"
+    assert column_info["turn_number"] == "INTEGER"
 
     cursor.close()
     conn.close()
@@ -80,18 +85,20 @@ def test_event_row_insert_query():
     assert "event_type" in query
     assert "timestamp_ns" in query
     assert "data" in query
+    assert "conversation_id" in query
+    assert "turn_number" in query
 
-    # Count placeholders - should be 4 (one for each field)
+    # Count placeholders - should be 6 (one for each field including conversation_id and turn_number)
     placeholder_count = query.count("?")
-    assert placeholder_count == 4
+    assert placeholder_count == 6
 
     # Verify the query is valid SQL by creating a table and inserting
     conn = sqlite3.connect(":memory:")
     cursor = conn.cursor()
     cursor.execute(EventRow.to_table_query())
 
-    # Try inserting a row using the generated query
-    test_data = ("test_uuid", "TEST_EVENT", 12345, b"test_data")
+    # Try inserting a row using the generated query (includes conversation_id and turn_number)
+    test_data = ("test_uuid", "TEST_EVENT", 12345, b"test_data", None, None)
     cursor.execute(query, test_data)
     conn.commit()
 
@@ -121,13 +128,15 @@ def test_event_row_to_insert_params(sample_uuids):
 
     # Verify the tuple has correct structure
     assert isinstance(params, tuple)
-    assert len(params) == 4
+    assert len(params) == 6
 
-    # Verify each field
+    # Verify each field (including conversation_id=None and turn_number=None)
     assert params[0] == uuid1
     assert params[1] == SampleEvent.FIRST_CHUNK.value
     assert params[2] == 10000
     assert params[3] == msgspec.json.encode(test_data)
+    assert params[4] is None  # conversation_id
+    assert params[5] is None  # turn_number
 
 
 def test_event_row_to_insert_params_empty_data(sample_uuids):
@@ -147,6 +156,8 @@ def test_event_row_to_insert_params_empty_data(sample_uuids):
     assert params[1] == SessionEvent.LOADGEN_ISSUE_CALLED.value
     assert params[2] == 5000
     assert params[3] == b""
+    assert params[4] is None  # conversation_id
+    assert params[5] is None  # turn_number
 
 
 def test_event_row_integration_with_sqlite(sample_uuids):
@@ -284,20 +295,20 @@ def test_record_event(sample_uuids):
             actual_rows = cursor.execute("SELECT * FROM events").fetchall()
 
     expected_rows = [
-        (uuid1, SessionEvent.LOADGEN_ISSUE_CALLED.value, 10000, b""),
-        (uuid2, SessionEvent.LOADGEN_ISSUE_CALLED.value, 10003, b""),
-        (uuid1, SampleEvent.FIRST_CHUNK.value, 10010, b""),
-        (uuid2, SampleEvent.FIRST_CHUNK.value, 10190, b""),
-        (uuid1, SampleEvent.NON_FIRST_CHUNK.value, 10201, b""),
-        (uuid3, SessionEvent.LOADGEN_ISSUE_CALLED.value, 10202, b""),
-        (uuid1, SampleEvent.NON_FIRST_CHUNK.value, 10203, b""),
-        (uuid2, SampleEvent.NON_FIRST_CHUNK.value, 10210, b""),
-        (uuid1, SampleEvent.NON_FIRST_CHUNK.value, 10211, b""),
-        (uuid1, SampleEvent.COMPLETE.value, 10211, b""),
-        (uuid2, SampleEvent.NON_FIRST_CHUNK.value, 10214, b""),
-        (uuid2, SampleEvent.NON_FIRST_CHUNK.value, 10217, b""),
-        (uuid2, SampleEvent.NON_FIRST_CHUNK.value, 10219, b""),
-        (uuid2, SampleEvent.COMPLETE.value, 10219, b""),
+        (uuid1, SessionEvent.LOADGEN_ISSUE_CALLED.value, 10000, b"", None, None),
+        (uuid2, SessionEvent.LOADGEN_ISSUE_CALLED.value, 10003, b"", None, None),
+        (uuid1, SampleEvent.FIRST_CHUNK.value, 10010, b"", None, None),
+        (uuid2, SampleEvent.FIRST_CHUNK.value, 10190, b"", None, None),
+        (uuid1, SampleEvent.NON_FIRST_CHUNK.value, 10201, b"", None, None),
+        (uuid3, SessionEvent.LOADGEN_ISSUE_CALLED.value, 10202, b"", None, None),
+        (uuid1, SampleEvent.NON_FIRST_CHUNK.value, 10203, b"", None, None),
+        (uuid2, SampleEvent.NON_FIRST_CHUNK.value, 10210, b"", None, None),
+        (uuid1, SampleEvent.NON_FIRST_CHUNK.value, 10211, b"", None, None),
+        (uuid1, SampleEvent.COMPLETE.value, 10211, b"", None, None),
+        (uuid2, SampleEvent.NON_FIRST_CHUNK.value, 10214, b"", None, None),
+        (uuid2, SampleEvent.NON_FIRST_CHUNK.value, 10217, b"", None, None),
+        (uuid2, SampleEvent.NON_FIRST_CHUNK.value, 10219, b"", None, None),
+        (uuid2, SampleEvent.COMPLETE.value, 10219, b"", None, None),
     ]
 
     assert expected_rows == actual_rows
@@ -307,11 +318,11 @@ def test_record_event(sample_uuids):
 def worker_proc_read_entries(sess_id, events_created_ev, uuid1, uuid2):
     events_created_ev.wait()
     expected_rows = [
-        (uuid1, SessionEvent.LOADGEN_ISSUE_CALLED.value, 10000, b""),
-        (uuid2, SessionEvent.LOADGEN_ISSUE_CALLED.value, 10003, b""),
-        (uuid1, SampleEvent.FIRST_CHUNK.value, 10010, b""),
-        (uuid2, SampleEvent.FIRST_CHUNK.value, 10190, b""),
-        (uuid1, SampleEvent.NON_FIRST_CHUNK.value, 10201, b""),
+        (uuid1, SessionEvent.LOADGEN_ISSUE_CALLED.value, 10000, b"", None, None),
+        (uuid2, SessionEvent.LOADGEN_ISSUE_CALLED.value, 10003, b"", None, None),
+        (uuid1, SampleEvent.FIRST_CHUNK.value, 10010, b"", None, None),
+        (uuid2, SampleEvent.FIRST_CHUNK.value, 10190, b"", None, None),
+        (uuid1, SampleEvent.NON_FIRST_CHUNK.value, 10201, b"", None, None),
     ]
     with sqlite3_cursor(EventRecorder.db_path(sess_id)) as (cursor, _):
         actual_rows = cursor.execute("SELECT * FROM events").fetchall()
