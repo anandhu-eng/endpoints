@@ -370,8 +370,7 @@ sqlite> SELECT DISTINCT conversation_id FROM events;
 
 ## 🔗 More Information
 
-- **Full Documentation**: See `examples/multi_turn/README.md`
-- **Implementation Details**: See `MULTI_TURN_IMPLEMENTATION_SUMMARY.md`
+- **Full Documentation**: See `examples/09_MultiTurn/README.md`
 - **Architecture**: See `AGENTS.md` (Multi-Turn section)
 
 ---

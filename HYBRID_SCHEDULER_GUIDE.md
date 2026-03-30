@@ -68,7 +68,7 @@ for sample in schedule:
         conversation_manager.wait_for_turn_ready(
             conv_id,
             turn,
-            timeout=300s
+            timeout=300
         )
 
     # Level 2: Concurrency Control (global across all conversations)

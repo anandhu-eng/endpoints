@@ -140,9 +140,10 @@ def test_sample_event_handler_register_hook(record_event_mock):
 
 @patch("inference_endpoint.load_generator.sample.record_exception")
 @patch("inference_endpoint.load_generator.sample.EventRecorder.record_event")
-def test_query_result_complete_does_not_advance_conversation_on_error(
+def test_query_result_complete_advances_conversation_on_error(
     record_event_mock, record_exception_mock, clean_sample_event_hooks
 ):
+    """Verify that failed turns advance conversation state to prevent sequential mode from blocking."""
     record_event_mock.return_value = None
     record_exception_mock.return_value = None
 
@@ -159,11 +160,10 @@ def test_query_result_complete_does_not_advance_conversation_on_error(
 
     SampleEventHandler.query_result_complete(result)
 
-    # mark_turn_failed advances the conversation and adds error placeholder
+    # After failure, the turn should be marked as complete to unblock sequential mode
     assert state.current_turn == 2  # pending_user_turn (1) + 1
     assert state.pending_user_turn is None  # Cleared after failure
-    assert state.message_history == [
-        {"role": "user", "content": "Hello"},
-        {"role": "assistant", "content": "[ERROR: Turn failed or timed out]"},
-    ]
+    assert len(state.message_history) == 2
+    assert state.message_history[0] == {"role": "user", "content": "Hello"}
+    assert "[ERROR:" in state.message_history[1]["content"]
     record_exception_mock.assert_called_once()

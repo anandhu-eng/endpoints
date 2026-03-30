@@ -357,11 +357,13 @@ class SchedulerBasedLoadGenerator(LoadGenerator):
             request_data = {"messages": messages}
 
             # Forward all generation parameters from sample_data_raw
-            # Exclude conversation-specific fields (conversation_id, turn, role, content, system)
-            # Skip None values to let defaults be applied
-            exclude_fields = {"conversation_id", "turn", "role", "content", "system"}
+            # Use allow-list approach to ensure only valid parameters are forwarded
+            from inference_endpoint.dataset_manager.multi_turn_dataset import (
+                GENERATION_PARAMS,
+            )
+
             for key, value in sample_data_raw.items():
-                if key not in exclude_fields and value is not None:
+                if key in GENERATION_PARAMS and value is not None:
                     request_data[key] = value
 
             # Handle max_new_tokens -> max_completion_tokens mapping if needed
