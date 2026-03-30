@@ -296,11 +296,11 @@ class ConversationManager:
             return True  # Don't block if we can't determine completion
 
         # Wait for completion event with timeout
-        start_time = time.time()
+        start_time = time.monotonic()
         while not state.is_complete():
             remaining_timeout = None
             if timeout is not None:
-                elapsed = time.time() - start_time
+                elapsed = time.monotonic() - start_time
                 remaining_timeout = max(MIN_TIMEOUT_SECONDS, timeout - elapsed)
                 if elapsed >= timeout:
                     logger.warning(
