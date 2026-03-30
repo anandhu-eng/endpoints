@@ -18,6 +18,7 @@ import tempfile
 from collections.abc import Generator
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from inference_endpoint.dataset_manager.dataset import DatasetFormat
 from inference_endpoint.dataset_manager.multi_turn_dataset import MultiTurnDataset
@@ -540,17 +541,13 @@ def test_multi_turn_dataset_openai_field_forwarding():
         {"conversation_id": "c1", "turn": 2, "role": "assistant", "content": "Hi"},
     ]
 
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".jsonl", delete=False
-    ) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
         for item in data:
             f.write(json.dumps(item) + "\n")
         temp_path = f.name
 
     try:
-        dataset = MultiTurnDataset.load_from_file(
-            temp_path, format=DatasetFormat.JSONL
-        )
+        dataset = MultiTurnDataset.load_from_file(temp_path, format=DatasetFormat.JSONL)
         dataset.load()
 
         sample = dataset.load_sample(0)
@@ -596,20 +593,21 @@ def test_multi_turn_dataset_all_generation_params():
             "user": "test_user_001",
             "chat_template": "test_template",
         },
-        {"conversation_id": "c1", "turn": 2, "role": "assistant", "content": "Response"},
+        {
+            "conversation_id": "c1",
+            "turn": 2,
+            "role": "assistant",
+            "content": "Response",
+        },
     ]
 
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".jsonl", delete=False
-    ) as f:
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
         for item in data:
             f.write(json.dumps(item) + "\n")
         temp_path = f.name
 
     try:
-        dataset = MultiTurnDataset.load_from_file(
-            temp_path, format=DatasetFormat.JSONL
-        )
+        dataset = MultiTurnDataset.load_from_file(temp_path, format=DatasetFormat.JSONL)
         dataset.load()
 
         sample = dataset.load_sample(0)
@@ -623,3 +621,172 @@ def test_multi_turn_dataset_all_generation_params():
                 ), f"Generation parameter '{param}' not forwarded to sample"
     finally:
         Path(temp_path).unlink()
+
+
+@pytest.mark.unit
+def test_validation_rejects_non_contiguous_turns_with_gap():
+    """Validation should reject turn sequences with gaps."""
+    data = [
+        {"conversation_id": "c1", "turn": 1, "role": "user", "content": "msg1"},
+        {"conversation_id": "c1", "turn": 2, "role": "assistant", "content": "resp1"},
+        {"conversation_id": "c1", "turn": 5, "role": "user", "content": "msg2"},
+        {"conversation_id": "c1", "turn": 6, "role": "assistant", "content": "resp2"},
+    ]
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+        for item in data:
+            f.write(json.dumps(item) + "\n")
+        temp_path = f.name
+
+    try:
+        with pytest.raises(ValueError, match="Non-contiguous turn numbering"):
+            MultiTurnDataset.load_from_file(temp_path, format=DatasetFormat.JSONL)
+    finally:
+        Path(temp_path).unlink()
+
+
+@pytest.mark.unit
+def test_validation_rejects_turns_not_starting_at_one():
+    """Validation should reject conversations whose first user turn is not 1."""
+    data = [
+        {"conversation_id": "c1", "turn": 3, "role": "user", "content": "msg"},
+        {"conversation_id": "c1", "turn": 4, "role": "assistant", "content": "resp"},
+    ]
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+        for item in data:
+            f.write(json.dumps(item) + "\n")
+        temp_path = f.name
+
+    try:
+        with pytest.raises(ValueError, match="First user turn must be turn 1"):
+            MultiTurnDataset.load_from_file(temp_path, format=DatasetFormat.JSONL)
+    finally:
+        Path(temp_path).unlink()
+
+
+@pytest.mark.unit
+def test_validation_accepts_valid_contiguous_turns():
+    """Validation should accept contiguous turn sequences."""
+    data = [
+        {"conversation_id": "c1", "turn": 1, "role": "user", "content": "msg1"},
+        {"conversation_id": "c1", "turn": 2, "role": "assistant", "content": "resp1"},
+        {"conversation_id": "c1", "turn": 3, "role": "user", "content": "msg2"},
+        {"conversation_id": "c1", "turn": 4, "role": "assistant", "content": "resp2"},
+    ]
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+        for item in data:
+            f.write(json.dumps(item) + "\n")
+        temp_path = f.name
+
+    try:
+        dataset = MultiTurnDataset.load_from_file(temp_path, format=DatasetFormat.JSONL)
+        dataset.load()
+        assert dataset.num_samples() == 2
+    finally:
+        Path(temp_path).unlink()
+
+
+@pytest.mark.unit
+def test_validation_rejects_turn_starting_at_zero():
+    """Validation should reject conversations starting at turn 0."""
+    data = [
+        {"conversation_id": "c1", "turn": 0, "role": "user", "content": "msg"},
+        {"conversation_id": "c1", "turn": 1, "role": "assistant", "content": "resp"},
+    ]
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+        for item in data:
+            f.write(json.dumps(item) + "\n")
+        temp_path = f.name
+
+    try:
+        with pytest.raises(ValueError, match="First user turn must be turn 1"):
+            MultiTurnDataset.load_from_file(temp_path, format=DatasetFormat.JSONL)
+    finally:
+        Path(temp_path).unlink()
+
+
+@pytest.mark.unit
+def test_validation_multiple_conversations_mixed_validity():
+    """Validation should identify the invalid conversation among valid ones."""
+    data = [
+        {"conversation_id": "c1", "turn": 1, "role": "user", "content": "msg1"},
+        {"conversation_id": "c1", "turn": 2, "role": "assistant", "content": "resp1"},
+        {"conversation_id": "c2", "turn": 1, "role": "user", "content": "msg2"},
+        {"conversation_id": "c2", "turn": 2, "role": "assistant", "content": "resp2"},
+        {"conversation_id": "c2", "turn": 5, "role": "user", "content": "msg3"},
+        {"conversation_id": "c2", "turn": 6, "role": "assistant", "content": "resp3"},
+    ]
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+        for item in data:
+            f.write(json.dumps(item) + "\n")
+        temp_path = f.name
+
+    try:
+        with pytest.raises(ValueError, match="c2.*Non-contiguous"):
+            MultiTurnDataset.load_from_file(temp_path, format=DatasetFormat.JSONL)
+    finally:
+        Path(temp_path).unlink()
+
+
+@pytest.mark.unit
+def test_validation_error_message_includes_conversation_id():
+    """Validation errors should name the offending conversation."""
+    data = [
+        {
+            "conversation_id": "customer_support_001",
+            "turn": 1,
+            "role": "user",
+            "content": "msg",
+        },
+        {
+            "conversation_id": "customer_support_001",
+            "turn": 2,
+            "role": "assistant",
+            "content": "resp",
+        },
+        {
+            "conversation_id": "customer_support_001",
+            "turn": 10,
+            "role": "user",
+            "content": "msg",
+        },
+    ]
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+        for item in data:
+            f.write(json.dumps(item) + "\n")
+        temp_path = f.name
+
+    try:
+        with pytest.raises(ValueError) as exc_info:
+            MultiTurnDataset.load_from_file(temp_path, format=DatasetFormat.JSONL)
+
+        error_msg = str(exc_info.value)
+        assert "customer_support_001" in error_msg
+        assert "Expected turn 3" in error_msg or "found turn 10" in error_msg
+    finally:
+        Path(temp_path).unlink()
+
+
+@pytest.mark.unit
+def test_validation_with_dataframe_direct():
+    """Validation should also run when constructing from a DataFrame directly."""
+    df = pd.DataFrame(
+        [
+            {"conversation_id": "c1", "turn": 1, "role": "user", "content": "msg1"},
+            {
+                "conversation_id": "c1",
+                "turn": 2,
+                "role": "assistant",
+                "content": "resp1",
+            },
+            {"conversation_id": "c1", "turn": 5, "role": "user", "content": "msg2"},
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Non-contiguous"):
+        MultiTurnDataset(df)

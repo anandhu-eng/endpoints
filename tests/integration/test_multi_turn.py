@@ -20,16 +20,13 @@ Test Categories:
 2. Message History: Verify conversation context accumulates correctly
 3. Concurrency Control: Test with varying concurrency levels
 4. Large Scale: Stress testing with many conversations and high concurrency
-5. Unit Stress: ConversationManager stress testing (no real endpoint)
+5. Sequential semantics: Verify conversations do not overlap in sequential mode
 """
 
-import concurrent.futures
 import json
 import random
 import tempfile
-import threading
 import time
-from collections import defaultdict
 from collections.abc import Generator
 from pathlib import Path
 from urllib.error import URLError
@@ -593,158 +590,7 @@ def test_large_scale(
 
 
 # ============================================================================
-# Test Category 5: Unit Stress Tests (No Real Endpoint)
-# ============================================================================
-
-
-@pytest.mark.integration
-@pytest.mark.slow
-@pytest.mark.run_explicitly
-@pytest.mark.parametrize(
-    "num_conversations,turns_per_conversation",
-    [
-        pytest.param(4096, 5, id="4096_conv_5_turns"),
-        pytest.param(1024, 10, id="1024_conv_10_turns"),
-    ],
-)
-def test_conversation_manager_stress(num_conversations, turns_per_conversation):
-    """Unit stress test: ConversationManager with many concurrent operations."""
-    manager = ConversationManager()
-
-    # Phase 1: Create all conversations in parallel
-    def create_conversation(conv_idx):
-        conv_id = f"conv_{conv_idx:04d}"
-        return manager.get_or_create(conv_id, "test system")
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=64) as executor:
-        futures = [
-            executor.submit(create_conversation, i) for i in range(num_conversations)
-        ]
-        results = [f.result() for f in concurrent.futures.as_completed(futures)]
-
-    assert len(results) == num_conversations
-
-    # Phase 2: Process turns - parallel across conversations, sequential within each
-    errors = []
-
-    def process_conversation(conv_idx):
-        conv_id = f"conv_{conv_idx:04d}"
-        local_errors = []
-
-        for turn in range(1, turns_per_conversation + 1):
-            try:
-                manager.mark_turn_issued(conv_id, turn, f"message {turn}")
-                time.sleep(0.001)  # Simulate processing
-                manager.mark_turn_complete(conv_id, f"response {turn}")
-            except Exception as e:
-                local_errors.append(str(e))
-
-        return local_errors
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=64) as executor:
-        futures = [
-            executor.submit(process_conversation, i) for i in range(num_conversations)
-        ]
-        for future in concurrent.futures.as_completed(futures):
-            errors.extend(future.result())
-
-    # Phase 3: Verify all conversations completed correctly
-    verification_errors = []
-
-    def verify_conversation(conv_idx):
-        conv_id = f"conv_{conv_idx:04d}"
-        state = manager._conversations[conv_id]
-        # current_turn represents the next turn to be processed, not the last completed
-        # After completing turn N, current_turn = N + 1
-        expected_turn = turns_per_conversation + 1
-
-        if state.current_turn != expected_turn:
-            return f"{conv_id}: Expected turn {expected_turn}, got {state.current_turn}"
-
-        expected_messages = (
-            turns_per_conversation * 2 + 1
-        )  # system + (user + assistant) * N
-        if len(state.message_history) != expected_messages:
-            return f"{conv_id}: Expected {expected_messages} messages, got {len(state.message_history)}"
-
-        return None
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=64) as executor:
-        futures = [
-            executor.submit(verify_conversation, i) for i in range(num_conversations)
-        ]
-        for future in concurrent.futures.as_completed(futures):
-            error = future.result()
-            if error:
-                verification_errors.append(error)
-
-    assert len(errors) == 0, f"Had {len(errors)} execution errors"
-    assert (
-        len(verification_errors) == 0
-    ), f"Had {len(verification_errors)} verification errors"
-
-
-@pytest.mark.integration
-@pytest.mark.slow
-@pytest.mark.run_explicitly
-def test_conversation_manager_race_conditions():
-    """Stress test: Concurrent operations on same conversations for race condition detection."""
-    manager = ConversationManager()
-    num_conversations = 1024
-    operations_per_conversation = 100
-    num_threads = 128
-
-    # Create all conversations
-    for i in range(num_conversations):
-        manager.get_or_create(f"conv_{i:04d}", "test")
-
-    errors = defaultdict(list)
-    operations_completed = {"issue": 0, "complete": 0, "wait": 0}
-    lock = threading.Lock()
-
-    def worker(worker_id):
-        local_errors = defaultdict(list)
-        local_ops = {"issue": 0, "complete": 0, "wait": 0}
-
-        for _ in range(operations_per_conversation):
-            conv_id = f"conv_{random.randint(0, num_conversations - 1):04d}"
-            operation = random.choice(["issue", "complete", "wait"])
-
-            try:
-                if operation == "issue":
-                    turn = random.randint(1, 10)
-                    manager.mark_turn_issued(conv_id, turn, f"msg {turn}")
-                    local_ops["issue"] += 1
-                elif operation == "complete":
-                    manager.mark_turn_complete(conv_id, "response")
-                    local_ops["complete"] += 1
-                else:  # wait
-                    turn = random.randint(1, 10)
-                    manager.wait_for_turn_ready(conv_id, turn, timeout=0.001)
-                    local_ops["wait"] += 1
-            except Exception as e:
-                local_errors[operation].append(str(e))
-
-        return local_errors, local_ops
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
-        futures = [executor.submit(worker, i) for i in range(num_threads)]
-        for future in concurrent.futures.as_completed(futures):
-            local_errors, local_ops = future.result()
-            for op, errs in local_errors.items():
-                errors[op].extend(errs)
-            with lock:
-                for op, count in local_ops.items():
-                    operations_completed[op] += count
-
-    # Some operations may legitimately fail (e.g., waiting for a turn that never completes)
-    # but we should not have crashes or deadlocks
-    total_operations = sum(operations_completed.values())
-    assert total_operations > 0  # At least some operations completed
-
-
-# ============================================================================
-# Test Category 7: Sequential Mode No Overlap Test
+# Test Category 5: Sequential Mode No Overlap Test
 # ============================================================================
 
 

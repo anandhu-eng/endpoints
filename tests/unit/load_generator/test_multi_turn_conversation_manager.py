@@ -13,8 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import concurrent.futures
+import random
 import threading
 import time
+from collections import defaultdict
 
 import pytest
 from inference_endpoint.load_generator.conversation_manager import (
@@ -699,3 +702,144 @@ def test_all_turns_fail():
     assert len(state.message_history) == 4
     assert "[ERROR:" in state.message_history[1]["content"]
     assert "[ERROR:" in state.message_history[3]["content"]
+
+
+@pytest.mark.unit
+@pytest.mark.slow
+@pytest.mark.run_explicitly
+@pytest.mark.parametrize(
+    "num_conversations,turns_per_conversation",
+    [
+        pytest.param(4096, 5, id="4096_conv_5_turns"),
+        pytest.param(1024, 10, id="1024_conv_10_turns"),
+    ],
+)
+def test_conversation_manager_stress(num_conversations, turns_per_conversation):
+    """Stress test ConversationManager with many independent conversations."""
+    manager = ConversationManager()
+
+    def create_conversation(conv_idx):
+        conv_id = f"conv_{conv_idx:04d}"
+        return manager.get_or_create(conv_id, "test system")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=64) as executor:
+        futures = [
+            executor.submit(create_conversation, i) for i in range(num_conversations)
+        ]
+        results = [
+            future.result() for future in concurrent.futures.as_completed(futures)
+        ]
+
+    assert len(results) == num_conversations
+
+    errors = []
+
+    def process_conversation(conv_idx):
+        conv_id = f"conv_{conv_idx:04d}"
+        local_errors = []
+
+        for turn in range(1, turns_per_conversation + 1):
+            try:
+                manager.mark_turn_issued(conv_id, turn, f"message {turn}")
+                time.sleep(0.001)
+                manager.mark_turn_complete(conv_id, f"response {turn}")
+            except Exception as exc:
+                local_errors.append(str(exc))
+
+        return local_errors
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=64) as executor:
+        futures = [
+            executor.submit(process_conversation, i) for i in range(num_conversations)
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            errors.extend(future.result())
+
+    verification_errors = []
+
+    def verify_conversation(conv_idx):
+        conv_id = f"conv_{conv_idx:04d}"
+        state = manager._conversations[conv_id]
+        expected_turn = turns_per_conversation + 1
+
+        if state.current_turn != expected_turn:
+            return f"{conv_id}: Expected turn {expected_turn}, got {state.current_turn}"
+
+        expected_messages = turns_per_conversation * 2 + 1
+        if len(state.message_history) != expected_messages:
+            return (
+                f"{conv_id}: Expected {expected_messages} messages, "
+                f"got {len(state.message_history)}"
+            )
+
+        return None
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=64) as executor:
+        futures = [
+            executor.submit(verify_conversation, i) for i in range(num_conversations)
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            error = future.result()
+            if error:
+                verification_errors.append(error)
+
+    assert len(errors) == 0, f"Had {len(errors)} execution errors"
+    assert (
+        len(verification_errors) == 0
+    ), f"Had {len(verification_errors)} verification errors"
+
+
+@pytest.mark.unit
+@pytest.mark.slow
+@pytest.mark.run_explicitly
+def test_conversation_manager_race_conditions():
+    """Stress concurrent conversation operations without endpoint dependencies."""
+    manager = ConversationManager()
+    num_conversations = 1024
+    operations_per_conversation = 100
+    num_threads = 128
+
+    for i in range(num_conversations):
+        manager.get_or_create(f"conv_{i:04d}", "test")
+
+    errors = defaultdict(list)
+    operations_completed = {"issue": 0, "complete": 0, "wait": 0}
+    lock = threading.Lock()
+
+    def worker():
+        local_errors = defaultdict(list)
+        local_ops = {"issue": 0, "complete": 0, "wait": 0}
+
+        for _ in range(operations_per_conversation):
+            conv_id = f"conv_{random.randint(0, num_conversations - 1):04d}"
+            operation = random.choice(["issue", "complete", "wait"])
+
+            try:
+                if operation == "issue":
+                    turn = random.randint(1, 10)
+                    manager.mark_turn_issued(conv_id, turn, f"msg {turn}")
+                    local_ops["issue"] += 1
+                elif operation == "complete":
+                    manager.mark_turn_complete(conv_id, "response")
+                    local_ops["complete"] += 1
+                else:
+                    turn = random.randint(1, 10)
+                    manager.wait_for_turn_ready(conv_id, turn, timeout=0.001)
+                    local_ops["wait"] += 1
+            except Exception as exc:
+                local_errors[operation].append(str(exc))
+
+        return local_errors, local_ops
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
+        futures = [executor.submit(worker) for _ in range(num_threads)]
+        for future in concurrent.futures.as_completed(futures):
+            local_errors, local_ops = future.result()
+            for op, errs in local_errors.items():
+                errors[op].extend(errs)
+            with lock:
+                for op, count in local_ops.items():
+                    operations_completed[op] += count
+
+    total_operations = sum(operations_completed.values())
+    assert total_operations > 0

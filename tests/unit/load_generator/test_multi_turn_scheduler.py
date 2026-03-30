@@ -346,7 +346,16 @@ def test_multi_turn_scheduler_with_concurrency_control(
         """Issues samples through scheduler."""
         nonlocal issued_count, max_inflight
         position = 0
-        for _s_idx, _delay in scheduler:
+        for sample_idx, _delay in scheduler:
+            sample_meta = multi_turn_dataset_metadata["samples"][sample_idx]
+            conv_id = sample_meta["conversation_id"]
+            turn = sample_meta["turn"]
+            conversation_manager.get_or_create(conv_id, None)
+            conversation_manager.mark_turn_issued(conv_id, turn, f"User message {turn}")
+            conversation_manager.mark_turn_complete(
+                conv_id, f"Assistant response for turn {turn}"
+            )
+
             with issued_lock:
                 issued_count += 1
                 current_inflight = scheduler._inflight
@@ -681,3 +690,176 @@ def test_multi_turn_scheduler_multiple_waiters_same_turn(
     thread2.join(timeout=1.0)
 
     assert ready_count == 2
+
+
+def _build_sequential_runtime_settings(n_samples: int) -> RuntimeSettings:
+    return RuntimeSettings(
+        metric_target=metrics.Throughput(10),
+        reported_metrics=[],
+        min_duration_ms=1000,
+        max_duration_ms=120_000,
+        n_samples_from_dataset=n_samples,
+        n_samples_to_issue=n_samples,
+        min_sample_count=n_samples,
+        rng_sched=random.Random(42),
+        rng_sample_index=random.Random(42),
+        load_pattern=LoadPattern(type=LoadPatternType.MULTI_TURN),
+    )
+
+
+def _sequential_schedule_conversation_order(metadata: dict[str, Any]) -> list[str]:
+    multi_turn_config = MultiTurnConfig(
+        enabled=True, mode=ConversationMode.SEQUENTIAL, turn_timeout_s=60.0
+    )
+    scheduler = MultiTurnScheduler(
+        _build_sequential_runtime_settings(len(metadata["samples"])),
+        WithoutReplacementSampleOrder,
+        ConversationManager(),
+        metadata,
+        multi_turn_config,
+    )
+
+    conv_order = []
+    for sample_idx, _ in scheduler._sequential_schedule():
+        conv_id = metadata["samples"][sample_idx]["conversation_id"]
+        if conv_id not in conv_order:
+            conv_order.append(conv_id)
+
+    return conv_order
+
+
+@pytest.mark.unit
+def test_sequential_mode_unsorted_conversation_ids():
+    """Sequential mode must preserve dataset order, not lexicographic order."""
+    metadata = {
+        "samples": [
+            {"index": 0, "conversation_id": "conv_zebra", "turn": 1},
+            {"index": 1, "conversation_id": "conv_zebra", "turn": 3},
+            {"index": 2, "conversation_id": "conv_alpha", "turn": 1},
+            {"index": 3, "conversation_id": "conv_alpha", "turn": 3},
+            {"index": 4, "conversation_id": "conv_beta", "turn": 1},
+            {"index": 5, "conversation_id": "conv_beta", "turn": 3},
+        ],
+        "num_conversations": 3,
+        "max_turns_per_conv": 3,
+        "user_turns_per_conversation": {
+            "conv_zebra": 2,
+            "conv_alpha": 2,
+            "conv_beta": 2,
+        },
+    }
+
+    assert _sequential_schedule_conversation_order(metadata) == [
+        "conv_zebra",
+        "conv_alpha",
+        "conv_beta",
+    ]
+
+
+@pytest.mark.unit
+def test_sequential_mode_numeric_string_ids():
+    """Sequential mode should follow dataset order for numeric-looking IDs too."""
+    metadata = {
+        "samples": [
+            {"index": 0, "conversation_id": "conv_100", "turn": 1},
+            {"index": 1, "conversation_id": "conv_20", "turn": 1},
+            {"index": 2, "conversation_id": "conv_3", "turn": 1},
+        ],
+        "num_conversations": 3,
+        "max_turns_per_conv": 1,
+        "user_turns_per_conversation": {"conv_100": 1, "conv_20": 1, "conv_3": 1},
+    }
+
+    assert _sequential_schedule_conversation_order(metadata) == [
+        "conv_100",
+        "conv_20",
+        "conv_3",
+    ]
+
+
+@pytest.mark.unit
+def test_sequential_mode_reverse_alphabetical_order():
+    """Sequential mode should preserve reverse-alphabetical dataset order."""
+    metadata = {
+        "samples": [
+            {"index": 0, "conversation_id": "conv_c", "turn": 1},
+            {"index": 1, "conversation_id": "conv_b", "turn": 1},
+            {"index": 2, "conversation_id": "conv_a", "turn": 1},
+        ],
+        "num_conversations": 3,
+        "max_turns_per_conv": 1,
+        "user_turns_per_conversation": {"conv_c": 1, "conv_b": 1, "conv_a": 1},
+    }
+
+    assert _sequential_schedule_conversation_order(metadata) == [
+        "conv_c",
+        "conv_b",
+        "conv_a",
+    ]
+
+
+@pytest.mark.unit
+def test_sequential_mode_single_conversation():
+    """Single-conversation sequential schedules should keep sample order intact."""
+    metadata = {
+        "samples": [
+            {"index": 0, "conversation_id": "only_conv", "turn": 1},
+            {"index": 1, "conversation_id": "only_conv", "turn": 3},
+        ],
+        "num_conversations": 1,
+        "max_turns_per_conv": 3,
+        "user_turns_per_conversation": {"only_conv": 2},
+    }
+    multi_turn_config = MultiTurnConfig(
+        enabled=True, mode=ConversationMode.SEQUENTIAL, turn_timeout_s=60.0
+    )
+    scheduler = MultiTurnScheduler(
+        _build_sequential_runtime_settings(2),
+        WithoutReplacementSampleOrder,
+        ConversationManager(),
+        metadata,
+        multi_turn_config,
+    )
+
+    schedule = list(scheduler._sequential_schedule())
+
+    assert len(schedule) == 2
+    assert schedule[0][0] == 0
+    assert schedule[1][0] == 1
+
+
+@pytest.mark.unit
+def test_sequential_mode_uuid_like_ids():
+    """Sequential mode should preserve dataset order for UUID-like IDs."""
+    metadata = {
+        "samples": [
+            {
+                "index": 0,
+                "conversation_id": "uuid-zzz-9999-ffff-000000000001",
+                "turn": 1,
+            },
+            {
+                "index": 1,
+                "conversation_id": "uuid-aaa-1111-0000-000000000002",
+                "turn": 1,
+            },
+            {
+                "index": 2,
+                "conversation_id": "uuid-mmm-5555-7777-000000000003",
+                "turn": 1,
+            },
+        ],
+        "num_conversations": 3,
+        "max_turns_per_conv": 1,
+        "user_turns_per_conversation": {
+            "uuid-zzz-9999-ffff-000000000001": 1,
+            "uuid-aaa-1111-0000-000000000002": 1,
+            "uuid-mmm-5555-7777-000000000003": 1,
+        },
+    }
+
+    assert _sequential_schedule_conversation_order(metadata) == [
+        "uuid-zzz-9999-ffff-000000000001",
+        "uuid-aaa-1111-0000-000000000002",
+        "uuid-mmm-5555-7777-000000000003",
+    ]
