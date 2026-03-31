@@ -101,6 +101,7 @@ class MetricsAggregatorService(ZmqEventRecordSubscriber):
     ):
         super().__init__(*args, **kwargs)
         self._kv_store = kv_store
+        self._tokenize_pool = tokenize_pool
         self._shutdown_event = shutdown_event
         self._shutdown_received = False
 
@@ -116,30 +117,29 @@ class MetricsAggregatorService(ZmqEventRecordSubscriber):
         self._total_duration_ns: float = 0.0
 
         self._table = MetricsTable(kv_store)
-        self._register_triggers(self._table, tokenize_pool, self.loop, streaming)
+        self._register_triggers(streaming)
 
-    @staticmethod
-    def _register_triggers(
-        table: MetricsTable,
-        tokenize_pool: TokenizePool | None,
-        loop: asyncio.AbstractEventLoop | None,
-        streaming: bool,
-    ) -> None:
+    def _register_triggers(self, streaming: bool) -> None:
         """Register metric triggers on the table.
 
         Streaming-only triggers (TTFT, chunk_delta, TPOT) are only registered
         when ``streaming=True``.
         """
+        table = self._table
+        store = self._kv_store
+        pool = self._tokenize_pool
+        loop = self.loop
+
         # Always registered
-        table.add_trigger(SampleField.ISSUED_NS, IslTrigger(tokenize_pool, loop))
-        table.add_trigger(SampleField.COMPLETE_NS, SampleLatencyTrigger())
-        table.add_trigger(SampleField.COMPLETE_NS, OslTrigger(tokenize_pool, loop))
+        table.add_trigger(SampleField.ISSUED_NS, IslTrigger(store, pool, loop))
+        table.add_trigger(SampleField.COMPLETE_NS, SampleLatencyTrigger(store))
+        table.add_trigger(SampleField.COMPLETE_NS, OslTrigger(store, pool, loop))
 
         # Streaming-only
         if streaming:
-            table.add_trigger(SampleField.RECV_FIRST_NS, TtftTrigger())
-            table.add_trigger(SampleField.LAST_RECV_NS, ChunkDeltaTrigger())
-            table.add_trigger(SampleField.COMPLETE_NS, TpotTrigger(tokenize_pool, loop))
+            table.add_trigger(SampleField.RECV_FIRST_NS, TtftTrigger(store))
+            table.add_trigger(SampleField.LAST_RECV_NS, ChunkDeltaTrigger(store))
+            table.add_trigger(SampleField.COMPLETE_NS, TpotTrigger(store, pool, loop))
 
     async def process(self, records: list[EventRecord]) -> None:
         saw_shutdown = False

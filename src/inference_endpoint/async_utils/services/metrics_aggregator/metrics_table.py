@@ -117,15 +117,17 @@ class TrackedBlock:
 class EmitTrigger(ABC):
     """A metric computation that fires when a SampleRow field is set.
 
-    Each trigger has a ``metric_name`` and a ``kv_store`` reference, both
-    set by ``MetricsTable.add_trigger``. When ``fire()`` computes a value,
-    it writes directly to ``self.kv_store.update(self.metric_name, value)``.
+    Each trigger has a ``metric_name`` and a ``kv_store`` reference.
+    When ``fire()`` computes a value, it writes directly to
+    ``self.kv_store.update(self.metric_name, value)``.
     """
 
-    def __init__(self, metric_name: str, requires: tuple[str, ...] = ()):
+    def __init__(
+        self, metric_name: str, kv_store: KVStore, requires: tuple[str, ...] = ()
+    ):
         self.metric_name = metric_name
+        self.kv_store = kv_store
         self.requires = requires
-        self.kv_store: KVStore = None  # type: ignore[assignment]  # Set by MetricsTable.add_trigger
 
     @abstractmethod
     def fire(
@@ -145,8 +147,8 @@ class TimeDeltaTrigger(EmitTrigger):
     Skips silently if the required field is None (event hasn't occurred yet).
     """
 
-    def __init__(self, metric_name: str, subtract_field: str):
-        super().__init__(metric_name, requires=(subtract_field,))
+    def __init__(self, metric_name: str, kv_store: KVStore, subtract_field: str):
+        super().__init__(metric_name, kv_store, requires=(subtract_field,))
         self._subtract_field = subtract_field
 
     def fire(self, ev_rec, row, pre_change):
@@ -168,11 +170,12 @@ class AsyncTokenTrigger(EmitTrigger):
     def __init__(
         self,
         metric_name: str,
+        kv_store: KVStore,
         tokenize_pool: TokenizePool | None,
         loop: asyncio.AbstractEventLoop | None,
         requires: tuple[str, ...] = (),
     ):
-        super().__init__(metric_name, requires=requires)
+        super().__init__(metric_name, kv_store, requires=requires)
         self._pool = tokenize_pool
         self._loop = loop
 
@@ -220,8 +223,10 @@ class AsyncTokenTrigger(EmitTrigger):
 class TtftTrigger(TimeDeltaTrigger):
     """TTFT = recv_first_ns (new) - issued_ns."""
 
-    def __init__(self):
-        super().__init__(MetricSeriesKey.TTFT_NS, subtract_field=SampleField.ISSUED_NS)
+    def __init__(self, kv_store: KVStore):
+        super().__init__(
+            MetricSeriesKey.TTFT_NS, kv_store, subtract_field=SampleField.ISSUED_NS
+        )
 
 
 class ChunkDeltaTrigger(TimeDeltaTrigger):
@@ -230,18 +235,22 @@ class ChunkDeltaTrigger(TimeDeltaTrigger):
     Skips when pre-change last_recv_ns is None (first recv via RECV_FIRST).
     """
 
-    def __init__(self):
+    def __init__(self, kv_store: KVStore):
         super().__init__(
-            MetricSeriesKey.CHUNK_DELTA_NS, subtract_field=SampleField.LAST_RECV_NS
+            MetricSeriesKey.CHUNK_DELTA_NS,
+            kv_store,
+            subtract_field=SampleField.LAST_RECV_NS,
         )
 
 
 class SampleLatencyTrigger(TimeDeltaTrigger):
     """sample_latency_ns = complete_ns (new) - issued_ns."""
 
-    def __init__(self):
+    def __init__(self, kv_store: KVStore):
         super().__init__(
-            MetricSeriesKey.SAMPLE_LATENCY_NS, subtract_field=SampleField.ISSUED_NS
+            MetricSeriesKey.SAMPLE_LATENCY_NS,
+            kv_store,
+            subtract_field=SampleField.ISSUED_NS,
         )
 
 
@@ -254,9 +263,12 @@ class IslTrigger(AsyncTokenTrigger):
     """ISL from PromptData: len(token_ids) sync, or token_count(text) async."""
 
     def __init__(
-        self, tokenize_pool: TokenizePool | None, loop: asyncio.AbstractEventLoop | None
+        self,
+        kv_store: KVStore,
+        tokenize_pool: TokenizePool | None,
+        loop: asyncio.AbstractEventLoop | None,
     ):
-        super().__init__(MetricSeriesKey.ISL, tokenize_pool, loop)
+        super().__init__(MetricSeriesKey.ISL, kv_store, tokenize_pool, loop)
 
     def fire(self, ev_rec, row, pre_change):
         # Sync fast path: pre-tokenized IDs (SGLang)
@@ -276,9 +288,12 @@ class OslTrigger(AsyncTokenTrigger):
     """OSL = token_count(full output text) from COMPLETE event data."""
 
     def __init__(
-        self, tokenize_pool: TokenizePool | None, loop: asyncio.AbstractEventLoop | None
+        self,
+        kv_store: KVStore,
+        tokenize_pool: TokenizePool | None,
+        loop: asyncio.AbstractEventLoop | None,
     ):
-        super().__init__(MetricSeriesKey.OSL, tokenize_pool, loop)
+        super().__init__(MetricSeriesKey.OSL, kv_store, tokenize_pool, loop)
 
     def _extract_text(self, ev_rec, row, pre_change):
         if isinstance(ev_rec.data, TextModelOutput):
@@ -303,10 +318,14 @@ class TpotTrigger(AsyncTokenTrigger):
     """
 
     def __init__(
-        self, tokenize_pool: TokenizePool | None, loop: asyncio.AbstractEventLoop | None
+        self,
+        kv_store: KVStore,
+        tokenize_pool: TokenizePool | None,
+        loop: asyncio.AbstractEventLoop | None,
     ):
         super().__init__(
             MetricSeriesKey.TPOT_NS,
+            kv_store,
             tokenize_pool,
             loop,
             requires=(SampleField.RECV_FIRST_NS,),
@@ -362,11 +381,9 @@ class MetricsTable:
     def add_trigger(self, field_name: str, trigger: EmitTrigger) -> None:
         """Register a trigger for a SampleRow field.
 
-        Creates the trigger's metric key in the KV store (as a series)
-        and sets the trigger's kv_store reference.
+        Creates the trigger's metric key in the KV store as a series.
         """
         self._kv_store.create_key(trigger.metric_name, "series")
-        trigger.kv_store = self._kv_store
         self._triggers.setdefault(field_name, []).append(trigger)
 
     # --- Session event handling ---
