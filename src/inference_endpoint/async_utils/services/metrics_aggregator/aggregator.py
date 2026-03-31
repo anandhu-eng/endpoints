@@ -48,12 +48,27 @@ logger = logging.getLogger(__name__)
 
 
 class MetricCounterKey(str, Enum):
-    """Counter metric keys tracked by the aggregator."""
+    """Counter metric keys tracked by the aggregator.
 
-    N_SAMPLES_ISSUED = "n_samples_issued"
-    N_SAMPLES_COMPLETED = "n_samples_completed"
-    N_SAMPLES_FAILED = "n_samples_failed"
-    DURATION_NS = "duration_ns"
+    Total counters include all samples (warmup + tracked).
+    Tracked counters only include samples within performance tracking windows.
+    """
+
+    TOTAL_SAMPLES_ISSUED = "total_samples_issued"
+    TOTAL_SAMPLES_COMPLETED = "total_samples_completed"
+    TOTAL_SAMPLES_FAILED = "total_samples_failed"
+    TRACKED_SAMPLES_ISSUED = "tracked_samples_issued"
+    TRACKED_SAMPLES_COMPLETED = "tracked_samples_completed"
+    TRACKED_DURATION_NS = "tracked_duration_ns"
+    # Total wall-clock duration since session start. Updated on every event as
+    # max(current, event_timestamp - session_start) to be defensive against
+    # non-monotonic timestamps.
+    #
+    # An alternative design was considered: store session_start_ns once and
+    # compute duration as (now - start) on read. This is infeasible because
+    # time.monotonic_ns() has inconsistent epoch per process — a reader in
+    # another process would get a meaningless value.
+    TOTAL_DURATION_NS = "total_duration_ns"
 
 
 _TRACKED_SAMPLE_EVENTS = frozenset(
@@ -92,9 +107,13 @@ class MetricsAggregatorService(ZmqEventRecordSubscriber):
         for key in MetricCounterKey:
             kv_store.create_key(key.value, "counter")
 
-        self._n_issued = 0
-        self._n_completed = 0
-        self._n_failed = 0
+        self._total_issued = 0
+        self._total_completed = 0
+        self._total_failed = 0
+        self._tracked_issued = 0
+        self._tracked_completed = 0
+        self._session_start_ns: int | None = None
+        self._total_duration_ns: float = 0.0
 
         self._table = MetricsTable(kv_store)
         self._register_triggers(self._table, tokenize_pool, self.loop, streaming)
@@ -133,16 +152,28 @@ class MetricsAggregatorService(ZmqEventRecordSubscriber):
 
             ev = record.event_type
 
+            # Update total_duration_ns on every event
+            if self._session_start_ns is not None:
+                elapsed = record.timestamp_ns - self._session_start_ns
+                if elapsed > self._total_duration_ns:
+                    self._total_duration_ns = elapsed
+                    store.update(
+                        MetricCounterKey.TOTAL_DURATION_NS.value,
+                        self._total_duration_ns,
+                    )
+
             # --- Session events ---
             if isinstance(ev, SessionEventType):
                 if ev == SessionEventType.ENDED:
                     self._shutdown_received = True
                     saw_shutdown = True
                 else:
+                    if ev == SessionEventType.STARTED:
+                        self._session_start_ns = record.timestamp_ns
                     table.handle_session_event(record)
                     if ev == SessionEventType.STOP_PERFORMANCE_TRACKING:
                         store.update(
-                            MetricCounterKey.DURATION_NS.value,
+                            MetricCounterKey.TRACKED_DURATION_NS.value,
                             table.total_tracked_duration_ns,
                         )
                 logger.debug("Session event: %s", ev)
@@ -150,8 +181,10 @@ class MetricsAggregatorService(ZmqEventRecordSubscriber):
 
             # --- Error events ---
             if isinstance(ev, ErrorEventType):
-                self._n_failed += 1
-                store.update(MetricCounterKey.N_SAMPLES_FAILED.value, self._n_failed)
+                self._total_failed += 1
+                store.update(
+                    MetricCounterKey.TOTAL_SAMPLES_FAILED.value, self._total_failed
+                )
                 logger.debug("Error event: %s", record)
                 continue
 
@@ -168,24 +201,41 @@ class MetricsAggregatorService(ZmqEventRecordSubscriber):
 
             if ev == SampleEventType.ISSUED:
                 table.set_field(uuid, SampleField.ISSUED_NS, ts, record)
-                self._n_issued += 1
-                store.update(MetricCounterKey.N_SAMPLES_ISSUED.value, self._n_issued)
+                self._total_issued += 1
+                store.update(
+                    MetricCounterKey.TOTAL_SAMPLES_ISSUED.value, self._total_issued
+                )
+                if table.get_row(uuid) is not None:
+                    self._tracked_issued += 1
+                    store.update(
+                        MetricCounterKey.TRACKED_SAMPLES_ISSUED.value,
+                        self._tracked_issued,
+                    )
             elif ev == SampleEventType.RECV_FIRST:
                 table.set_field(uuid, SampleField.RECV_FIRST_NS, ts, record)
                 table.set_field(uuid, SampleField.LAST_RECV_NS, ts, record)
             elif ev == SampleEventType.RECV_NON_FIRST:
                 table.set_field(uuid, SampleField.LAST_RECV_NS, ts, record)
             elif ev == SampleEventType.COMPLETE:
+                # Check if tracked before set_field (which removes the row)
+                is_tracked = table.get_row(uuid) is not None
                 table.set_field(uuid, SampleField.COMPLETE_NS, ts, record)
-                self._n_completed += 1
+                self._total_completed += 1
                 store.update(
-                    MetricCounterKey.N_SAMPLES_COMPLETED.value, self._n_completed
+                    MetricCounterKey.TOTAL_SAMPLES_COMPLETED.value,
+                    self._total_completed,
                 )
+                if is_tracked:
+                    self._tracked_completed += 1
+                    store.update(
+                        MetricCounterKey.TRACKED_SAMPLES_COMPLETED.value,
+                        self._tracked_completed,
+                    )
 
         if saw_shutdown:
             await table.drain_tasks()
             store.update(
-                MetricCounterKey.DURATION_NS.value,
+                MetricCounterKey.TRACKED_DURATION_NS.value,
                 table.total_tracked_duration_ns,
             )
             self._finalize()

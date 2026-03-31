@@ -37,7 +37,13 @@ logger = logging.getLogger(__name__)
 _encoder = msgspec.msgpack.Encoder()
 _decoder = msgspec.msgpack.Decoder(int)
 
-_LINGER_MS = 5000  # Bounded linger to avoid hanging if receiver is gone
+# Bounded linger: ZMQ waits up to this long to deliver queued messages when the
+# PUSH socket is closed. An infinite linger (-1) guarantees delivery but could
+# hang the subprocess forever if the receiver dies. 5s is generous for a single
+# small IPC message — the receiver is already listening before subprocesses are
+# spawned. If this proves too short (e.g., parent is heavily loaded during
+# launch), increase or set to -1, but be aware of the hang risk.
+_LINGER_MS = 5000
 
 
 async def send_ready_signal(

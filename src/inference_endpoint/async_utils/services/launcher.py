@@ -126,7 +126,7 @@ class ServiceLauncher:
             crashed = [
                 (proc.pid, exit_code)
                 for proc in self._procs
-                if (exit_code := proc.poll()) != 0
+                if (exit_code := proc.poll()) is not None and exit_code != 0
             ]
 
             self.kill_all()

@@ -117,7 +117,7 @@ class KVStore(ABC):
     """
 
     @abstractmethod
-    def create_key(self, key: str, type: Literal["series", "counter"]) -> None:
+    def create_key(self, key: str, key_type: Literal["series", "counter"]) -> None:
         """Register a new key in the store."""
         raise NotImplementedError
 
@@ -241,9 +241,22 @@ class _SeriesItem:
             self._grow()
         offset = _HEADER_BYTES + self._count * _VALUE_BYTES
         struct.pack_into("<d", self._mm, offset, value)
-        # Flush to ensure the value is visible before updating the count header.
-        # Without this, ARM (weak memory model) readers could see the new count
-        # but read stale/uninitialized data at the corresponding offset.
+        # NOTE: This flush() calls msync(), which is a no-op on tmpfs (/dev/shm)
+        # and does NOT act as a CPU memory barrier. On x86-64 (TSO), store ordering
+        # is guaranteed — the value write above is visible before the count update
+        # below without any explicit barrier. On ARM (weak memory model), a reader
+        # could observe the count update before the value write. To support ARM
+        # properly, Python's mmap doesn't expose memory fences; you would need
+        # ctypes to call libc's __sync_synchronize() or use atomic operations via
+        # a C extension. For now, this flush is kept as a placeholder per review
+        # feedback. The primary safety guarantee is the single-writer protocol:
+        # readers only read up to the count they observed, and on the target
+        # platform (x86-64 Linux), TSO provides the required ordering.
+        #
+        # For ARM platforms: Prometheus integration is planned as a replacement
+        # for mmap-backed metrics. As a temporary workaround, an on-disk metrics
+        # directory can be used instead of tmpfs — msync will then act as a real
+        # flush, providing ordering at the cost of performance.
         self._mm.flush()
         self._count += 1
         struct.pack_into("<Q", self._mm, 0, self._count)
@@ -262,6 +275,13 @@ class _SeriesItem:
             self._mm.close()
 
     def _grow(self) -> None:
+        # Concurrency safety: readers in other processes hold their own mmap of
+        # this file. ftruncate() extends the file and zero-fills the new region;
+        # the reader's existing mmap remains valid (the kernel keeps the mapping
+        # alive independently). The reader detects the size change via fstat()
+        # and remaps. Between ftruncate and the next append(), the new region
+        # contains zeros, but readers are safe because they only read up to the
+        # count header value, which hasn't been updated yet.
         old_mm = self._mm
         new_capacity = self._capacity * 2
         total = _HEADER_BYTES + new_capacity * _VALUE_BYTES
@@ -358,16 +378,16 @@ class BasicKVStore(KVStore):
         self._dir.mkdir(parents=True, exist_ok=True)
         self._items: dict[str, _CounterItem | _SeriesItem] = {}
 
-    def create_key(self, key: str, type: Literal["series", "counter"]) -> None:
+    def create_key(self, key: str, key_type: Literal["series", "counter"]) -> None:
         if key in self._items:
             return
         path = self._dir / f"{key}.kv"
-        if type == "counter":
+        if key_type == "counter":
             self._items[key] = _CounterItem(path)
-        elif type == "series":
+        elif key_type == "series":
             self._items[key] = _SeriesItem(path)
         else:
-            raise ValueError(f"Unknown key type: {type}")
+            raise ValueError(f"Unknown key type: {key_type}")
 
     def update(self, key: str, value: float) -> None:
         item = self._items.get(key)
@@ -409,14 +429,14 @@ class BasicKVStoreReader:
         self._dir = store_dir
         self._readers: dict[str, _CounterReader | _SeriesReader] = {}
 
-    def register_key(self, key: str, type: Literal["series", "counter"]) -> None:
+    def register_key(self, key: str, key_type: Literal["series", "counter"]) -> None:
         """Register a key to read. Call before get()/snapshot()."""
         if key in self._readers:
             return
         path = self._dir / f"{key}.kv"
-        if type == "counter":
+        if key_type == "counter":
             self._readers[key] = _CounterReader(path)
-        elif type == "series":
+        elif key_type == "series":
             self._readers[key] = _SeriesReader(path)
 
     def get(self, key: str) -> float | SeriesStats:
