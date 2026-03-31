@@ -119,10 +119,11 @@ class BenchmarkSession:
                         if self.stop_requested:
                             break
 
-                if self.stop_requested:
-                    self.logger.info("Accuracy sample issuance aborted early")
-                else:
-                    self.logger.info("All accuracy samples issued")
+                if accuracy_test_generators:
+                    if self.stop_requested:
+                        self.logger.info("Accuracy sample issuance aborted early")
+                    else:
+                        self.logger.info("All accuracy samples issued")
 
                 self.event_recorder.should_check_idle = True
                 EventRecorder.record_event(
