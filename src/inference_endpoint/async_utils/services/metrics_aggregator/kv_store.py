@@ -43,6 +43,7 @@ import logging
 import math
 import mmap
 import os
+import platform
 import shutil
 import struct
 from abc import ABC, abstractmethod
@@ -248,8 +249,8 @@ class _SeriesItem:
         # could observe the count update before the value write. To support ARM
         # properly, Python's mmap doesn't expose memory fences; you would need
         # ctypes to call libc's __sync_synchronize() or use atomic operations via
-        # a C extension. For now, this flush is kept as a placeholder per review
-        # feedback. The primary safety guarantee is the single-writer protocol:
+        # a C extension.
+        # The primary safety guarantee is the single-writer protocol:
         # readers only read up to the count they observed, and on the target
         # platform (x86-64 Linux), TSO provides the required ordering.
         #
@@ -257,7 +258,10 @@ class _SeriesItem:
         # for mmap-backed metrics. As a temporary workaround, an on-disk metrics
         # directory can be used instead of tmpfs — msync will then act as a real
         # flush, providing ordering at the cost of performance.
-        self._mm.flush()
+        if platform.machine() != "x86_64":
+            # Do not flush on x86-64 to avoid a no-op syscall on every append()
+            # For ARM, flush() and use an on-disk metrics directory instead of tmpfs.
+            self._mm.flush()
         self._count += 1
         struct.pack_into("<Q", self._mm, 0, self._count)
 
