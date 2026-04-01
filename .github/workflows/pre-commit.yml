@@ -22,8 +22,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install pip==26.0.1
-          pip install -e .
-          pip install pre-commit==4.5.1
+          pip install -e ".[dev]"
 
       - name: Run pre-commit
         run: |
