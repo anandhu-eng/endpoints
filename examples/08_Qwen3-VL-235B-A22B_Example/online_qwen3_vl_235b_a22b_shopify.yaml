@@ -15,7 +15,6 @@ datasets:
   - name: shopify_product_catalogue::q3vl
     type: "performance"
 
-
 settings:
   runtime:
     min_duration_ms: 600000 # 10 minutes
