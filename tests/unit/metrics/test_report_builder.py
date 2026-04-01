@@ -15,12 +15,14 @@
 
 """Tests for report.py and report_builder.py."""
 
+import json
 from pathlib import Path
 
 import pytest
 from inference_endpoint.async_utils.services.metrics_aggregator.kv_store import (
     BasicKVStore,
     BasicKVStoreReader,
+    SeriesStats,
 )
 from inference_endpoint.metrics.report import Report, compute_summary
 from inference_endpoint.metrics.report_builder import build_report
@@ -33,20 +35,20 @@ from inference_endpoint.metrics.report_builder import build_report
 @pytest.mark.unit
 class TestComputeSummary:
     def test_empty(self):
-        s = compute_summary([])
-        assert s["total"] == 0.0
-        assert s["min"] == 0.0
+        s = compute_summary(SeriesStats())
+        assert s["total"] == 0
+        assert s["min"] == 0
         assert s["histogram"]["buckets"] == []
 
     def test_single_value(self):
-        s = compute_summary([42.0])
+        s = compute_summary(SeriesStats([42.0], dtype=float))
         assert s["min"] == 42.0
         assert s["max"] == 42.0
         assert s["avg"] == 42.0
         assert s["std_dev"] == 0.0
 
     def test_multiple_values(self):
-        s = compute_summary([1.0, 2.0, 3.0, 4.0, 5.0])
+        s = compute_summary(SeriesStats([1.0, 2.0, 3.0, 4.0, 5.0], dtype=float))
         assert s["min"] == 1.0
         assert s["max"] == 5.0
         assert s["total"] == 15.0
@@ -57,7 +59,10 @@ class TestComputeSummary:
 
     def test_percentiles(self):
         values = list(range(1, 101))  # 1..100
-        s = compute_summary([float(v) for v in values], percentiles=(50, 90, 99))
+        s = compute_summary(
+            SeriesStats([float(v) for v in values], dtype=float),
+            percentiles=(50, 90, 99),
+        )
         assert s["percentiles"]["50"] == pytest.approx(50.5, abs=1)
         assert s["percentiles"]["90"] == pytest.approx(90.1, abs=1)
         assert s["percentiles"]["99"] == pytest.approx(99.01, abs=1)
@@ -81,15 +86,9 @@ def _make_store(tmp_path: Path, n_samples: int = 50):
         "test_started_at",
     ]:
         w.create_key(key, "counter")
-    for key in [
-        "ttft_ns",
-        "tpot_ns",
-        "sample_latency_ns",
-        "osl",
-        "isl",
-        "chunk_delta_ns",
-    ]:
+    for key in ["ttft_ns", "sample_latency_ns", "osl", "isl", "chunk_delta_ns"]:
         w.create_key(key, "series")
+    w.create_key("tpot_ns", "series", dtype=float)
 
     w.update("n_samples_issued", n_samples)
     w.update("n_samples_completed", n_samples)
@@ -111,15 +110,9 @@ def _make_store(tmp_path: Path, n_samples: int = 50):
         "test_started_at",
     ]:
         r.register_key(key, "counter")
-    for key in [
-        "ttft_ns",
-        "tpot_ns",
-        "sample_latency_ns",
-        "osl",
-        "isl",
-        "chunk_delta_ns",
-    ]:
+    for key in ["ttft_ns", "sample_latency_ns", "osl", "isl", "chunk_delta_ns"]:
         r.register_key(key, "series")
+    r.register_key("tpot_ns", "series", dtype=float)
 
     return w, r
 
@@ -137,7 +130,7 @@ class TestBuildReport:
 
         assert report.n_samples_issued == 0
         assert report.duration_ns is None
-        assert report.qps is None
+        assert report.qps() is None
         assert report.ttft == {}
         assert report.latency == {}
 
@@ -151,7 +144,7 @@ class TestBuildReport:
         assert report.n_samples_issued == 50
         assert report.n_samples_completed == 50
         assert report.duration_ns == 10_000_000_000
-        assert report.qps == pytest.approx(5.0)
+        assert report.qps() == pytest.approx(5.0)
 
         assert "min" in report.ttft
         assert "percentiles" in report.ttft
@@ -159,7 +152,7 @@ class TestBuildReport:
         assert report.ttft["min"] > 0
         assert report.latency["min"] > 0
         assert report.tpot == {}  # No TPOT values written
-        assert report.tps is not None  # OSL data present
+        assert report.tps() is not None  # OSL data present
 
         r.close()
         w.close()
@@ -207,9 +200,9 @@ class TestReport:
         w, r = _make_store(tmp_path, n_samples=5)
         report = build_report(r)
 
-        json_str = report.to_json()
-        assert '"qps"' in json_str
-        assert '"n_samples_completed": 5' in json_str
+        data = json.loads(report.to_json())
+        assert data["n_samples_completed"] == 5
+        assert "ttft" in data
 
         r.close()
         w.close()
@@ -221,7 +214,8 @@ class TestReport:
         out_path = tmp_path / "report.json"
         report.to_json(save_to=out_path)
         assert out_path.exists()
-        assert '"qps"' in out_path.read_text()
+        data = json.loads(out_path.read_bytes())
+        assert data["n_samples_completed"] == 5
 
         r.close()
         w.close()
@@ -240,8 +234,8 @@ class TestReport:
             latency={},
             output_sequence_lengths={},
         )
-        assert report.qps is None
-        assert report.tps is None
+        assert report.qps() is None
+        assert report.tps() is None
 
     def test_display_no_started_at(self):
         """test_started_at=0 should not display a timestamp."""

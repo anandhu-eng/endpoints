@@ -17,16 +17,21 @@
 
 from __future__ import annotations
 
-import dataclasses
+import math
 import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import msgspec.json
 import numpy as np
 
 from ..utils import monotime_to_datetime
+
+if TYPE_CHECKING:
+    from inference_endpoint.async_utils.services.metrics_aggregator.kv_store import (
+        SeriesStats,
+    )
 
 # ---------------------------------------------------------------------------
 # Summary computation
@@ -36,20 +41,24 @@ _DEFAULT_PERCENTILES = (99.9, 99, 97, 95, 90, 80, 75, 50, 25, 10, 5, 1)
 
 
 def compute_summary(
-    values: list[float],
+    stats: SeriesStats,
     percentiles: tuple[float, ...] = _DEFAULT_PERCENTILES,
     n_histogram_buckets: int = 10,
 ) -> dict[str, Any]:
-    """Compute rollup statistics from a list of metric values.
+    """Compute rollup statistics from pre-computed SeriesStats.
+
+    Scalar stats (total, min, max, avg, std_dev) are derived from the
+    incrementally maintained rollups in SeriesStats. Numpy is only used
+    for percentiles and histograms, which require the raw values.
 
     Returns a dict with: total, min, max, avg, std_dev, median,
     percentiles (dict), and histogram (buckets + counts).
     """
-    if not values:
+    if stats.count == 0:
         return {
-            "total": 0.0,
-            "min": 0.0,
-            "max": 0.0,
+            "total": 0,
+            "min": 0,
+            "max": 0,
             "median": 0.0,
             "avg": 0.0,
             "std_dev": 0.0,
@@ -57,7 +66,17 @@ def compute_summary(
             "histogram": {"buckets": [], "counts": []},
         }
 
-    arr = np.array(values, dtype=np.float64)
+    # Scalar stats from pre-computed rollups (no numpy needed)
+    avg = stats.total / stats.count
+    # Bessel's correction (ddof=1) for sample standard deviation
+    if stats.count > 1:
+        n = stats.count
+        std_dev = math.sqrt((stats.sum_sq - stats.total**2 / n) / (n - 1))
+    else:
+        std_dev = 0.0
+
+    # Percentiles and histogram require raw values
+    arr = np.array(stats.values, dtype=np.float64)
     arr.sort()
 
     perc_values = np.percentile(arr, percentiles, method="linear")
@@ -72,12 +91,12 @@ def compute_summary(
     ]
 
     return {
-        "total": float(arr.sum()),
-        "min": float(arr[0]),
-        "max": float(arr[-1]),
+        "total": stats.total,
+        "min": stats.min_val,
+        "max": stats.max_val,
         "median": float(np.median(arr)),
-        "avg": float(arr.mean()),
-        "std_dev": float(arr.std()),
+        "avg": avg,
+        "std_dev": std_dev,
         "percentiles": perc_dict,
         "histogram": {"buckets": hist_buckets, "counts": counts.tolist()},
     }
@@ -88,8 +107,7 @@ def compute_summary(
 # ---------------------------------------------------------------------------
 
 
-@dataclasses.dataclass(frozen=True)
-class Report:
+class Report(msgspec.Struct, frozen=True):  # type: ignore[call-arg]
     """Summarized benchmark report."""
 
     version: str
@@ -106,13 +124,11 @@ class Report:
     latency: dict[str, Any]
     output_sequence_lengths: dict[str, Any]
 
-    @property
     def qps(self) -> float | None:
         if self.duration_ns is None or self.duration_ns <= 0:
             return None
         return self.n_samples_completed / (self.duration_ns / 1e9)
 
-    @property
     def tps(self) -> float | None:
         if self.duration_ns is None or self.duration_ns <= 0:
             return None
@@ -123,17 +139,12 @@ class Report:
             return None
         return total / (self.duration_ns / 1e9)
 
-    def to_json(self, save_to: os.PathLike | None = None) -> str:
-        d = dataclasses.asdict(self)
-        d["qps"] = self.qps
-        d["tps"] = self.tps
-        json_str = msgspec.json.format(
-            msgspec.json.encode(dict(sorted(d.items()))), indent=2
-        ).decode("utf-8")
+    def to_json(self, save_to: os.PathLike | None = None) -> bytes:
+        json_bytes = msgspec.json.format(msgspec.json.encode(self), indent=2)
         if save_to is not None:
-            with Path(save_to).open("w") as f:
-                f.write(json_str)
-        return json_str
+            with Path(save_to).open("wb") as f:
+                f.write(json_bytes)
+        return json_bytes
 
     def display(
         self,
@@ -156,13 +167,13 @@ class Report:
         else:
             fn(f"Duration: N/A{newline}")
 
-        if self.qps is not None:
-            fn(f"QPS: {self.qps:.2f}{newline}")
+        if (qps := self.qps()) is not None:
+            fn(f"QPS: {qps:.2f}{newline}")
         else:
             fn(f"QPS: N/A{newline}")
 
-        if self.tps is not None:
-            fn(f"TPS: {self.tps:.2f}{newline}")
+        if (tps := self.tps()) is not None:
+            fn(f"TPS: {tps:.2f}{newline}")
 
         if summary_only:
             fn(f"----------------- End of Summary -----------------{newline}")
@@ -219,8 +230,9 @@ def _display_metric(
 
     if buckets:
         bucket_strs = [
-            f"  [{lo * scale_factor:.2f}, {hi * scale_factor:.2f})"
-            for lo, hi in buckets
+            f"  [{lo * scale_factor:.2f}, {hi * scale_factor:.2f}"
+            + ("]" if i == len(buckets) - 1 else ")")
+            for i, (lo, hi) in enumerate(buckets)
         ]
         max_count = max(counts)
         normalize = max_bar_length / max_count if max_count > 0 else 1

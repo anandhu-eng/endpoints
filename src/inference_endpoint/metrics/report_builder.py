@@ -39,8 +39,8 @@ def build_report(reader: BasicKVStoreReader) -> Report:
     snap = reader.snapshot()
 
     def _counter(key: str) -> int:
-        val = snap.get(key, 0.0)
-        return int(val) if isinstance(val, int | float) else 0
+        val = snap.get(key)
+        return int(val) if isinstance(val, int) else 0
 
     # Counters
     n_issued = _counter("n_samples_issued")
@@ -53,7 +53,7 @@ def build_report(reader: BasicKVStoreReader) -> Report:
     def _summarize(key: str) -> dict:
         val = snap.get(key)
         if isinstance(val, SeriesStats) and val.count > 0:
-            return compute_summary(val.values)
+            return compute_summary(val)
         return {}
 
     version_info = get_version_info()
