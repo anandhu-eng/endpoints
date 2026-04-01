@@ -20,6 +20,8 @@ from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
+from pydantic import ValidationError
+
 from inference_endpoint.dataset_manager.predefined.shopify_product_catalogue import (
     ProductMetadata,
 )
@@ -32,7 +34,6 @@ from inference_endpoint.evaluation.scoring import (
     _match_hierarchical_paths,
     _parse_response_to_category,
 )
-from pydantic import ValidationError
 
 
 class TestMatchHierarchicalPaths:

@@ -25,6 +25,7 @@ with varying payload sizes (0, 100, 1k, 8k, 32k). Run with:
 import json
 
 import pytest
+
 from inference_endpoint.core.types import Query
 from inference_endpoint.sglang.adapter import SGLangGenerateAdapter
 

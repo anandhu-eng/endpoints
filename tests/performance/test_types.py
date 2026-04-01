@@ -30,6 +30,7 @@ To compare against saved results:
 
 import msgspec
 import pytest
+
 from inference_endpoint.core.types import (
     Query,
     QueryResult,

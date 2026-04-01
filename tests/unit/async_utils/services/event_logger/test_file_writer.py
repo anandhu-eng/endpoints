@@ -19,6 +19,7 @@ import json
 
 import msgspec
 import pytest
+
 from inference_endpoint.async_utils.services.event_logger.file_writer import (
     JSONLWriter,
 )

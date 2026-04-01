@@ -17,6 +17,7 @@ import time
 from unittest.mock import patch
 
 import pytest
+
 from inference_endpoint.core.types import QueryResult, StreamChunk
 from inference_endpoint.load_generator.events import SampleEvent
 from inference_endpoint.load_generator.sample import Sample, SampleEventHandler

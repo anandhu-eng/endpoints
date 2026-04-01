@@ -16,6 +16,7 @@
 """Tests for eval command."""
 
 import pytest
+
 from inference_endpoint.exceptions import CLIError
 from inference_endpoint.main import app
 

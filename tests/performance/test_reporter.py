@@ -18,10 +18,11 @@ import random
 import time
 
 import pytest
+from pympler import asizeof
+
 from inference_endpoint.load_generator.events import SampleEvent, SessionEvent
 from inference_endpoint.metrics.recorder import EventRecorder
 from inference_endpoint.metrics.reporter import MetricsReporter, TPOTReportingMode
-from pympler import asizeof
 
 
 def get_EventRecorder(*args, **kwargs):

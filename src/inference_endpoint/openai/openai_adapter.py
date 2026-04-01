@@ -16,6 +16,7 @@
 import time
 
 import msgspec
+
 from inference_endpoint.core.types import Query, QueryResult, TextModelOutput
 from inference_endpoint.endpoint_client.adapter_protocol import HttpRequestAdapter
 

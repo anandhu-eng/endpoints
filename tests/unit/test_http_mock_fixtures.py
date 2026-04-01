@@ -24,6 +24,7 @@ import logging
 
 import aiohttp
 import pytest
+
 from inference_endpoint.core.types import Query, TextModelOutput
 from inference_endpoint.openai.openai_adapter import OpenAIAdapter
 from inference_endpoint.openai.openai_types_gen import CreateChatCompletionResponse

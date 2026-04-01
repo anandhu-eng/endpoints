@@ -275,9 +275,9 @@ class Worker:
             if self.http_config.record_worker_events:
                 pid = os.getpid()
                 worker_db_name = f"worker_report_{self.worker_id}_{pid}"
-                assert (
-                    self.http_config.event_logs_dir is not None
-                ), "event_logs_dir must be set if record_worker_events is enabled"
+                assert self.http_config.event_logs_dir is not None, (
+                    "event_logs_dir must be set if record_worker_events is enabled"
+                )
                 report_path = self.http_config.event_logs_dir / f"{worker_db_name}.csv"
 
                 with EventRecorder(session_id=worker_db_name) as event_recorder:

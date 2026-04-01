@@ -191,9 +191,9 @@ class RoundRuleset(BenchmarkSuiteRuleset):
         max_duration_ms = ruleset.max_duration_ms_valid
         if user_config.max_duration_ms is not None:
             max_duration_ms = user_config.max_duration_ms
-        assert (
-            max_duration_ms is not None and max_duration_ms >= min_duration_ms
-        ), "Max duration must be greater than or equal to min duration"
+        assert max_duration_ms is not None and max_duration_ms >= min_duration_ms, (
+            "Max duration must be greater than or equal to min duration"
+        )
 
         n_samples_from_dataset = model.dataset.size
         if user_config.ds_subset_size:

@@ -19,6 +19,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from inference_endpoint import __version__
 from inference_endpoint.commands.info import execute_info
 from inference_endpoint.commands.init import execute_init

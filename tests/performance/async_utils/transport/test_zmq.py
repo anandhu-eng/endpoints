@@ -27,6 +27,7 @@ from dataclasses import dataclass
 import msgspec
 import pytest
 import uvloop
+
 from inference_endpoint.async_utils.transport.zmq.context import ManagedZMQContext
 from inference_endpoint.async_utils.transport.zmq.transport import (
     ZMQTransportConfig,

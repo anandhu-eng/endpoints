@@ -18,6 +18,7 @@
 import time
 
 import pytest
+
 from inference_endpoint.core.record import (
     TOPIC_FRAME_SIZE,
     ErrorEventType,

@@ -16,6 +16,7 @@
 """Tests for RecordWriter base class flush-interval logic."""
 
 import pytest
+
 from inference_endpoint.async_utils.services.event_logger.writer import RecordWriter
 from inference_endpoint.core.record import EventRecord, SampleEventType
 

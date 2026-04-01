@@ -22,6 +22,7 @@ from typing import Any
 
 import pandas as pd
 import pytest
+
 from inference_endpoint.dataset_manager.transforms import (
     AddStaticColumns,
     ColumnFilter,

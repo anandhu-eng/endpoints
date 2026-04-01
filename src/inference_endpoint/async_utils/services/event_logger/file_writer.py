@@ -24,6 +24,7 @@ JSONLWriter into a ``StreamedFileWriter`` base class sitting between
 from pathlib import Path
 
 import msgspec
+
 from inference_endpoint.core.record import EventRecord, EventType
 
 from .writer import RecordWriter

@@ -14,6 +14,7 @@
 # limitations under the License.
 
 import pytest
+
 from inference_endpoint.utils import byte_quantity_to_str
 
 

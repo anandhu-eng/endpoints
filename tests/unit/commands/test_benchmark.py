@@ -21,6 +21,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import ValidationError
+
 from inference_endpoint.commands.benchmark.cli import (
     from_config,
     offline,
@@ -48,7 +50,6 @@ from inference_endpoint.config.schema import (
 from inference_endpoint.core.types import QueryResult
 from inference_endpoint.endpoint_client.config import HTTPClientConfig
 from inference_endpoint.exceptions import InputValidationError
-from pydantic import ValidationError
 
 TEMPLATE_DIR = (
     Path(__file__).resolve().parents[3]

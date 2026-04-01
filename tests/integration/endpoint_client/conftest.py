@@ -16,8 +16,8 @@
 """Shared fixtures for endpoint client integration tests."""
 
 import pytest
-from inference_endpoint.endpoint_client.config import HTTPClientConfig
 
+from inference_endpoint.endpoint_client.config import HTTPClientConfig
 from tests.futures_client import FuturesHttpClient
 
 

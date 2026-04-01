@@ -21,9 +21,9 @@ This test assumes a server running GPT-OSS is available at localhost:30000.
 import asyncio
 
 import pytest
+
 from inference_endpoint.core.types import Query
 from inference_endpoint.endpoint_client.config import HTTPClientConfig
-
 from tests.futures_client import FuturesHttpClient
 
 # Configuration for external GPT-OSS server

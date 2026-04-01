@@ -24,6 +24,7 @@ import asyncio
 
 import msgspec
 import pytest
+
 from inference_endpoint.async_utils.services.event_logger.__main__ import (
     EventLoggerService,
 )

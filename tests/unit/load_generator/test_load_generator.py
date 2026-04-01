@@ -34,7 +34,6 @@ from inference_endpoint.load_generator.scheduler import (
     SampleOrder,
     WithoutReplacementSampleOrder,
 )
-
 from tests.test_helpers import DummyDataLoader, SerialSampleIssuer
 
 
@@ -161,20 +160,20 @@ def test_full_run(record_event_mock):
     # the number of issues per sample is the same
     target_issues = rt_settings.n_samples_to_issue // rt_settings.n_samples_from_dataset
     for index, n_sent in sent_hist.items():
-        assert (
-            n_sent == target_issues
-        ), f"Sample {index} should have been issued {target_issues} times, but was issued {n_sent} times"
+        assert n_sent == target_issues, (
+            f"Sample {index} should have been issued {target_issues} times, but was issued {n_sent} times"
+        )
 
         # Check uuid uniqueness
         n_distinct_uuids = len(set(sent_uuids[index]))
-        assert (
-            n_distinct_uuids == n_sent
-        ), f"Sample {index} should have {n_sent} unique uuids, but has {n_distinct_uuids}"
+        assert n_distinct_uuids == n_sent, (
+            f"Sample {index} should have {n_sent} unique uuids, but has {n_distinct_uuids}"
+        )
 
     # Check that ALL uuids are unique
-    assert (
-        len(seen_uuids) == rt_settings.n_samples_to_issue
-    ), f"Should have seen {rt_settings.n_samples_to_issue} unique uuids, but saw {len(seen_uuids)}"
+    assert len(seen_uuids) == rt_settings.n_samples_to_issue, (
+        f"Should have seen {rt_settings.n_samples_to_issue} unique uuids, but saw {len(seen_uuids)}"
+    )
 
 
 @patch("inference_endpoint.load_generator.load_generator.EventRecorder.record_event")
@@ -218,19 +217,19 @@ def test_max_duration_ms_stops_issuance(load_sample_data_mock, event_recorder_mo
     elapsed_s = time.monotonic() - start
 
     # Should have stopped well before issuing 1,000,000 samples
-    assert (
-        issued_count < 1_000_000
-    ), f"Expected timeout to stop issuance, but {issued_count} samples were issued"
+    assert issued_count < 1_000_000, (
+        f"Expected timeout to stop issuance, but {issued_count} samples were issued"
+    )
     # Elapsed wall-clock should be reasonably close to max_duration_ms:
     # lower bound ensures the timeout (not an early exit) was responsible for stopping,
     # upper bound is generous to accommodate slow CI runners.
     max_duration_s = max_duration_ms / 1000
-    assert (
-        elapsed_s >= max_duration_s * 0.5
-    ), f"Elapsed time {elapsed_s:.3f}s is unexpectedly below max_duration_ms={max_duration_ms}ms"
-    assert (
-        elapsed_s < max_duration_s * 2
-    ), f"Elapsed time {elapsed_s:.3f}s far exceeds max_duration_ms={max_duration_ms}ms"
+    assert elapsed_s >= max_duration_s * 0.5, (
+        f"Elapsed time {elapsed_s:.3f}s is unexpectedly below max_duration_ms={max_duration_ms}ms"
+    )
+    assert elapsed_s < max_duration_s * 2, (
+        f"Elapsed time {elapsed_s:.3f}s far exceeds max_duration_ms={max_duration_ms}ms"
+    )
 
 
 @patch("inference_endpoint.load_generator.load_generator.EventRecorder.record_event")
@@ -281,13 +280,13 @@ def test_max_duration_ms_stops_issuance_with_poisson_scheduler(
         issued_count += 1
     elapsed_s = time.monotonic() - start
 
-    assert (
-        issued_count < 1_000_000
-    ), f"Expected timeout to stop issuance, but {issued_count} samples were issued"
+    assert issued_count < 1_000_000, (
+        f"Expected timeout to stop issuance, but {issued_count} samples were issued"
+    )
     max_duration_s = max_duration_ms / 1000
-    assert (
-        elapsed_s >= max_duration_s * 0.5
-    ), f"Elapsed time {elapsed_s:.3f}s is unexpectedly below max_duration_ms={max_duration_ms}ms"
-    assert (
-        elapsed_s < max_duration_s * 3
-    ), f"Elapsed time {elapsed_s:.3f}s far exceeds max_duration_ms={max_duration_ms}ms"
+    assert elapsed_s >= max_duration_s * 0.5, (
+        f"Elapsed time {elapsed_s:.3f}s is unexpectedly below max_duration_ms={max_duration_ms}ms"
+    )
+    assert elapsed_s < max_duration_s * 3, (
+        f"Elapsed time {elapsed_s:.3f}s far exceeds max_duration_ms={max_duration_ms}ms"
+    )

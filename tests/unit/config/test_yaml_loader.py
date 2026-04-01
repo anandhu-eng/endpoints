@@ -18,10 +18,11 @@
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
+
 from inference_endpoint.config.schema import BenchmarkConfig, LoadPatternType
 from inference_endpoint.config.schema import TestType as BenchmarkTestType
 from inference_endpoint.exceptions import CLIError
-from pydantic import ValidationError
 
 
 class TestYAMLLoading:

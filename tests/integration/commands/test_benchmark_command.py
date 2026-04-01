@@ -18,6 +18,7 @@
 import json
 
 import pytest
+
 from inference_endpoint.commands.benchmark.execute import run_benchmark
 from inference_endpoint.config.schema import (
     BenchmarkConfig,

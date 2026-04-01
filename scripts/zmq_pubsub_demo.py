@@ -26,12 +26,13 @@ import uuid
 from pathlib import Path
 
 from inference_endpoint.async_utils.autoinit import LOOP_MANAGER
-from inference_endpoint.async_utils.event_publisher import EventPublisherService
 from inference_endpoint.async_utils.transport.record import (
     EventRecord,
     SampleEventType,
     SessionEventType,
 )
+
+from inference_endpoint.async_utils.event_publisher import EventPublisherService
 from inference_endpoint.async_utils.transport.zmq.context import ManagedZMQContext
 from inference_endpoint.async_utils.transport.zmq.pubsub import ZmqEventRecordSubscriber
 

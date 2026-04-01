@@ -19,6 +19,7 @@ import asyncio
 import signal
 
 import pytest
+
 from inference_endpoint.async_utils.transport import ZmqWorkerPoolTransport
 from inference_endpoint.core.types import (
     Query,
@@ -131,9 +132,9 @@ class TestWorkerBasicFunctionality:
                         final_responses[response.id] = response
 
             # Verify all responses received
-            assert len(final_responses) == len(
-                requests
-            ), f"Expected {len(requests)} responses, got {len(final_responses)}"
+            assert len(final_responses) == len(requests), (
+                f"Expected {len(requests)} responses, got {len(final_responses)}"
+            )
 
             # Verify each response
             for i, (_, stream, expected) in enumerate(requests):

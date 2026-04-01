@@ -18,6 +18,7 @@ import math
 
 import msgspec.json
 import pytest
+
 from inference_endpoint.core.types import TextModelOutput
 from inference_endpoint.load_generator.events import SampleEvent, SessionEvent
 from inference_endpoint.metrics.recorder import sqlite3_cursor

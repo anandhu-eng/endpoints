@@ -19,6 +19,7 @@ from pathlib import Path
 from urllib.parse import urljoin
 
 import pytest
+
 from inference_endpoint import metrics
 from inference_endpoint.config.runtime_settings import RuntimeSettings
 from inference_endpoint.config.schema import LoadPattern, LoadPatternType
@@ -137,9 +138,9 @@ async def _run_load_generator_full_run_url(
         url, dummy_dataloader, tmp_path, rt_settings
     )
     num_responses_in_cache = len(response_cache)
-    assert (
-        num_responses_in_cache == scheduler.total_samples_to_issue
-    ), "Number of samples in response cache and number of samples in dataset should be the same"
+    assert num_responses_in_cache == scheduler.total_samples_to_issue, (
+        "Number of samples in response cache and number of samples in dataset should be the same"
+    )
     vals = {}
     for i in range(dummy_dataloader.num_samples()):
         entry = dummy_dataloader.load_sample(i)
@@ -200,9 +201,9 @@ async def test_load_generator_full_run_mock_http_oracle_server(
         mock_http_oracle_server.url, dummy_dataloader, tmp_path, rt_settings
     )
     num_responses_in_cache = len(response_cache)
-    assert (
-        num_responses_in_cache == scheduler.total_samples_to_issue
-    ), "Number of samples in response cache and number of samples in dataset should be the same"
+    assert num_responses_in_cache == scheduler.total_samples_to_issue, (
+        "Number of samples in response cache and number of samples in dataset should be the same"
+    )
     vals = {}
     for i in range(dummy_dataloader.num_samples()):
         entry = dummy_dataloader.load_sample(i)
@@ -211,18 +212,18 @@ async def test_load_generator_full_run_mock_http_oracle_server(
     logging.info(f"Number of samples in dataset: {num_samples_in_dataset}")
     logging.info(f"Total samples to issue: {scheduler.total_samples_to_issue}")
     logging.info(f"Request data: {num_responses_in_cache}")
-    assert (
-        num_samples_in_dataset == scheduler.total_samples_to_issue
-    ), "Number of samples in dataset and number of samples in request data should be the same"
+    assert num_samples_in_dataset == scheduler.total_samples_to_issue, (
+        "Number of samples in dataset and number of samples in request data should be the same"
+    )
 
     for sample_uuid, resp in response_cache.items():
         sample_index = sample_uuid_map["performance"][sample_uuid]
         logging.info(
             f"Sample {sample_uuid} should have been response {vals[sample_index][0:30]}, but was response {resp[0:30]}"
         )
-        assert (
-            resp == vals[sample_index]
-        ), f"Sample {sample_uuid} should have been response {vals[sample_index][0:30]}, but was response {resp[0:30]}"
+        assert resp == vals[sample_index], (
+            f"Sample {sample_uuid} should have been response {vals[sample_index][0:30]}, but was response {resp[0:30]}"
+        )
 
 
 @pytest.mark.asyncio

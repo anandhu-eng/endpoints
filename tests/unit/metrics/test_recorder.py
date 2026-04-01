@@ -21,6 +21,7 @@ from unittest.mock import patch
 
 import msgspec.json
 import pytest
+
 from inference_endpoint.load_generator.events import SampleEvent, SessionEvent
 from inference_endpoint.metrics.recorder import (
     EventRecorder,
@@ -237,9 +238,9 @@ def test_event_recorder_singleton_violation_close_non_active():
 
 
 def test_event_recorder_singleton_violation_record_event_non_active(sample_uuids):
-    assert (
-        EventRecorder.LIVE is None
-    ), "Cannot run test - EventRecorder is active from previous test"
+    assert EventRecorder.LIVE is None, (
+        "Cannot run test - EventRecorder is active from previous test"
+    )
     with pytest.raises(EventRecorderSingletonViolation):
         EventRecorder.record_event(
             SessionEvent.LOADGEN_ISSUE_CALLED, 10000, sample_uuid=sample_uuids(1)
@@ -346,9 +347,9 @@ def test_shm_usage(sample_uuids):
     if worker_proc.is_alive():
         worker_proc.terminate()
         worker_proc.join(timeout=1)
-        assert (
-            not worker_proc.is_alive()
-        ), "Worker process could not be terminated after cleanup"
+        assert not worker_proc.is_alive(), (
+            "Worker process could not be terminated after cleanup"
+        )
         raise AssertionError("Worker process failed to complete in a reasonable time")
     assert worker_proc.exitcode == 0
 
