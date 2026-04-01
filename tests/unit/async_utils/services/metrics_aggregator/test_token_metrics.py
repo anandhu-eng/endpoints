@@ -21,7 +21,6 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import pytest
-
 from inference_endpoint.async_utils.services.metrics_aggregator.token_metrics import (
     TokenizePool,
 )
@@ -64,7 +63,7 @@ class TestTokenizePool:
     def test_concurrent_calls_thread_safe(self):
         with patch(_MOCK_TARGET, _FakeTokenizer):
             with TokenizePool("fake", n_workers=2) as pool:
-                texts = [f"word{i} word{i + 1}" for i in range(20)]
+                texts = [f"word{i} word{i+1}" for i in range(20)]
 
                 with ThreadPoolExecutor(max_workers=8) as executor:
                     futures = [executor.submit(pool.token_count, t) for t in texts]

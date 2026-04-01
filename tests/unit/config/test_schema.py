@@ -16,7 +16,6 @@
 """Tests for configuration schema models and validation."""
 
 import pytest
-
 from inference_endpoint.config.schema import (
     APIType,
     BenchmarkConfig,

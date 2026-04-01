@@ -19,7 +19,6 @@ import logging
 
 import pytest
 from colorama import Fore, Style
-
 from inference_endpoint.utils.logging import ColoredFormatter, setup_logging
 
 

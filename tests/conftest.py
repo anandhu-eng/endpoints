@@ -30,7 +30,6 @@ from typing import Any
 
 import msgspec.json
 import pytest
-
 from inference_endpoint import metrics
 from inference_endpoint.config.runtime_settings import RuntimeSettings
 from inference_endpoint.config.schema import LoadPattern, LoadPatternType

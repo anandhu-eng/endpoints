@@ -17,10 +17,8 @@ import random
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-from tqdm import tqdm
-
 import inference_endpoint.metrics as metrics
+import pytest
 from inference_endpoint.config.runtime_settings import RuntimeSettings
 from inference_endpoint.config.schema import LoadPattern, LoadPatternType
 from inference_endpoint.load_generator.events import SampleEvent
@@ -31,6 +29,8 @@ from inference_endpoint.load_generator.scheduler import (
 )
 from inference_endpoint.load_generator.session import BenchmarkSession
 from inference_endpoint.metrics.reporter import MetricsReporter
+from tqdm import tqdm
+
 from tests.test_helpers import (
     DummyDataLoader,
     PooledSampleIssuer,
@@ -144,9 +144,9 @@ def test_session_start(clean_sample_event_hooks):
             max_shutdown_timeout_s=300,
         )
         events_db_path = sess.event_recorder.connection_name
-        assert sess.wait_for_test_end(timeout=120.0), (
-            "Session did not complete within timeout"
-        )
+        assert sess.wait_for_test_end(
+            timeout=120.0
+        ), "Session did not complete within timeout"
 
         # Shutdown the sample issuer to ensure proper cleanup and error propagation
         sample_issuer.shutdown()

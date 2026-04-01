@@ -20,7 +20,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from inference_endpoint.endpoint_client.config import HTTPClientConfig
 from inference_endpoint.endpoint_client.http_client import HTTPEndpointClient
 from inference_endpoint.testing.echo_server import EchoServer

@@ -31,8 +31,6 @@ import argparse
 import logging
 import random
 
-from tqdm import tqdm
-
 from inference_endpoint import metrics
 from inference_endpoint.config.runtime_settings import RuntimeSettings
 from inference_endpoint.config.schema import (
@@ -58,6 +56,7 @@ from inference_endpoint.load_generator import (
     SampleEventHandler,
     WithoutReplacementSampleOrder,
 )
+from tqdm import tqdm
 
 # Configuration for SGLang server
 SGLANG_SERVER_HOST = "localhost"

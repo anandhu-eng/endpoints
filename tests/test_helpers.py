@@ -29,7 +29,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import zmq
-
 from inference_endpoint.core.types import (
     Query,
     QueryResult,
@@ -181,9 +180,9 @@ def get_test_socket_path(tmp_path: Path, test_name: str, suffix: str = "") -> st
     # Combine with a short suffix
     name = f"{hash_val}{suffix}"
     socket_path = f"ipc://{tmp_path}/{name}"
-    assert len(socket_path) <= zmq.IPC_PATH_MAX_LEN, (
-        "socket path is too long for ZMQ IPC"
-    )
+    assert (
+        len(socket_path) <= zmq.IPC_PATH_MAX_LEN
+    ), "socket path is too long for ZMQ IPC"
     return socket_path
 
 

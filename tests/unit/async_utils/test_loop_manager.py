@@ -18,7 +18,6 @@
 import time
 
 import pytest
-
 from inference_endpoint.async_utils.loop_manager import LoopManager, ManagedLoop
 
 

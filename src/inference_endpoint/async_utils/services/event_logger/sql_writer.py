@@ -18,10 +18,9 @@
 from pathlib import Path
 
 import msgspec
+from inference_endpoint.core.record import EventRecord
 from sqlalchemy import BigInteger, Integer, LargeBinary, String, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
-
-from inference_endpoint.core.record import EventRecord
 
 from .writer import RecordWriter
 

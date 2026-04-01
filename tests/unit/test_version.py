@@ -16,7 +16,6 @@
 """Tests for version utilities."""
 
 import pytest
-
 from inference_endpoint import __version__
 from inference_endpoint.utils.version import get_git_sha, get_version_info
 

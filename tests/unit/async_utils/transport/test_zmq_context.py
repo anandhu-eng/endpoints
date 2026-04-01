@@ -21,7 +21,6 @@ import time
 
 import pytest
 import zmq
-
 from inference_endpoint.async_utils.transport.zmq.context import ManagedZMQContext
 
 # =============================================================================

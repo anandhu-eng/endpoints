@@ -24,7 +24,6 @@ validating:
 """
 
 import pytest
-
 from inference_endpoint.commands.probe import ProbeConfig, execute_probe
 from inference_endpoint.exceptions import ExecutionError
 

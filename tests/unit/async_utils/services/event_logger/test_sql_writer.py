@@ -17,9 +17,6 @@
 
 import msgspec
 import pytest
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session
-
 from inference_endpoint.async_utils.services.event_logger.sql_writer import (
     Base,
     EventRowModel,
@@ -33,6 +30,8 @@ from inference_endpoint.core.record import (
     SessionEventType,
 )
 from inference_endpoint.core.types import ErrorData
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
 
 
 def _record(event_type, uuid="", ts=0, data=None):

@@ -20,9 +20,8 @@ import io
 import os
 from unittest import mock
 
-import pytest
-
 import inference_endpoint.profiling.line_profiler as line_profiler
+import pytest
 from inference_endpoint.profiling import (
     get_stats,
     is_enabled,

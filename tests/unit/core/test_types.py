@@ -24,7 +24,6 @@ import time
 
 import msgspec
 import pytest
-
 from inference_endpoint.core.types import (
     ErrorData,
     Query,

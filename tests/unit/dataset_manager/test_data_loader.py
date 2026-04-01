@@ -15,7 +15,6 @@
 
 
 import pytest
-
 from inference_endpoint.dataset_manager.predefined.random import RandomDataset
 
 
@@ -70,32 +69,28 @@ def test_random_data_loader(range_ratio):
         save_tokenized_data=save_tokenized_data,
     )
     random_data_loader.load()
-    assert len(random_data_loader.data) == num_sequences, (
-        f"Expected {num_sequences} samples, got {random_data_loader.num_samples()}"
-    )
+    assert (
+        len(random_data_loader.data) == num_sequences
+    ), f"Expected {num_sequences} samples, got {random_data_loader.num_samples()}"
     # Note that the input tokens are only loaded if save_tokenized_data is True, useful for debugging or other purposes
-    assert random_data_loader.num_samples() == num_sequences, (
-        f"Expected {num_sequences} samples, got {random_data_loader.num_samples()}"
-    )
+    assert (
+        random_data_loader.num_samples() == num_sequences
+    ), f"Expected {num_sequences} samples, got {random_data_loader.num_samples()}"
     # Go over the data and check the input tokens and the data length
     for i in range(random_data_loader.num_samples()):
         sample = random_data_loader.load_sample(i)
-        assert isinstance(sample["prompt"], str), (
-            f"Expected string, got {type(random_data_loader.data[i])}"
-        )
+        assert isinstance(
+            sample["prompt"], str
+        ), f"Expected string, got {type(random_data_loader.data[i])}"
         # Note that the number of tokens can be smaller than the input_seq_length * range ration due to
         # the decoding-encoding which may coalesce some sequences to newer tokens. We use a 0.8 factor to allow for this.
         # And we allow for a 20% overhead due to the decoding-encoding.
         assert (
             len(sample["input_tokens"]) > input_seq_length * range_ratio * 0.8
             and len(sample["input_tokens"]) <= input_seq_length * 1.2
-        ), (
-            f"Expected {input_seq_length * range_ratio * 0.8} to {input_seq_length * 0.2} input tokens, got {len(sample['input_tokens'])}"
-        )
+        ), f"Expected {input_seq_length*range_ratio*0.8} to {input_seq_length*0.2} input tokens, got {len(sample["input_tokens"])}"
 
         assert (
             len(sample["prompt"]) >= 1024 * range_ratio * 0.5
             and len(sample["prompt"]) <= 7 * 1024
-        ), (
-            f"Expected length between 1024*range_ratio*0.5 and 1024, got {len(sample['prompt'])}"
-        )
+        ), f"Expected length between 1024*range_ratio*0.5 and 1024, got {len(sample["prompt"])}"

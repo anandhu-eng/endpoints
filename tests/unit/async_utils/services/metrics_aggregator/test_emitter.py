@@ -16,7 +16,6 @@
 import json
 
 import pytest
-
 from inference_endpoint.async_utils.services.metrics_aggregator.emitter import (
     JsonlMetricEmitter,
 )

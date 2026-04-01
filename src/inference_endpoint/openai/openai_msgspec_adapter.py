@@ -20,7 +20,6 @@ Msgspec-based OpenAI adapter for fast serialization/deserialization.
 import time
 
 import msgspec
-
 from inference_endpoint.config.schema import ModelParams, StreamingMode
 from inference_endpoint.core.types import Query, QueryResult, TextModelOutput
 from inference_endpoint.dataset_manager.transforms import (

@@ -24,8 +24,6 @@ from unittest.mock import patch
 
 import pandas as pd
 import pytest
-from PIL import Image
-
 from inference_endpoint.dataset_manager.predefined.shopify_product_catalogue import (
     ShopifyProductCatalogue,
 )
@@ -33,6 +31,7 @@ from inference_endpoint.dataset_manager.predefined.shopify_product_catalogue.pre
     ShopifyMultimodalFormatter,
     q3vl,
 )
+from PIL import Image
 
 
 def _make_pil_image(image_format: str = "JPEG") -> Image.Image:

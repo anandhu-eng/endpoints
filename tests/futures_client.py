@@ -41,9 +41,9 @@ class FuturesHttpClient(HTTPEndpointClient):
 
         # Start response handler on client's loop
         self._pending: dict[str | int, concurrent.futures.Future] = {}
-        assert self.loop is not None, (
-            "Client loop should be initialized by parent __init__"
-        )
+        assert (
+            self.loop is not None
+        ), "Client loop should be initialized by parent __init__"
         self._handler_future = asyncio.run_coroutine_threadsafe(
             self._handle_responses(), self.loop
         )

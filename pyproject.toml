@@ -152,11 +152,7 @@ select = [
 ignore = [
     "E501",  # line too long, handled by ruff-format
     "B008",  # do not perform function calls in argument defaults
-    "B024",  # abstract base class with no abstract methods
     "C901",  # too complex
-    # TODO: address these in a follow-up refactor PR
-    "UP042", # prefer StrEnum over (str, Enum) — project uses str, Enum pattern
-    "UP047", # prefer type parameters over TypeVar — requires broader refactor
 ]
 
 [tool.ruff.format]

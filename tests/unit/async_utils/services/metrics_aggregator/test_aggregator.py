@@ -23,7 +23,6 @@ import asyncio
 from unittest.mock import MagicMock
 
 import pytest
-
 from inference_endpoint.async_utils.services.metrics_aggregator.aggregator import (
     MetricsAggregatorService,
 )

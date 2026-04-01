@@ -15,7 +15,6 @@
 
 import msgspec
 import pytest
-
 from inference_endpoint.async_utils.services.metrics_aggregator.metrics_table import (
     MetricsTable,
     SampleRow,

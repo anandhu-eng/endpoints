@@ -24,7 +24,6 @@ import asyncio
 import msgspec
 import pytest
 import pytest_asyncio
-
 from inference_endpoint.async_utils.transport import ZmqWorkerPoolTransport
 from inference_endpoint.async_utils.transport.zmq.context import ManagedZMQContext
 from inference_endpoint.async_utils.transport.zmq.transport import (
@@ -328,9 +327,9 @@ class TestZmqRobustness:
             # Verify the serialized message is actually larger than the buffer
             encoder = msgspec.msgpack.Encoder()
             encoded = encoder.encode(query)
-            assert len(encoded) > small_buf, (
-                f"Encoded message ({len(encoded)}B) must exceed buffer ({small_buf}B)"
-            )
+            assert (
+                len(encoded) > small_buf
+            ), f"Encoded message ({len(encoded)}B) must exceed buffer ({small_buf}B)"
 
             # Capture the RuntimeError from the event loop callback
             captured_exceptions = []
@@ -354,9 +353,7 @@ class TestZmqRobustness:
                 assert any(
                     isinstance(e, RuntimeError) and "ZMQ message truncated" in str(e)
                     for e in captured_exceptions
-                ), (
-                    f"Expected RuntimeError with 'ZMQ message truncated', got: {captured_exceptions}"
-                )
+                ), f"Expected RuntimeError with 'ZMQ message truncated', got: {captured_exceptions}"
             finally:
                 loop.set_exception_handler(original_handler)
                 sender.close()

@@ -68,12 +68,12 @@ class TestOpenAIAPITypes:
                 "assistant",
                 "user",
             ], f"Expected role to be assistant or user, got {message['role']}"
-            assert message["content"] is not None, (
-                f"Expected content to be not None, got {message['content']}"
-            )
-            assert message["name"] is None, (
-                f"Expected name to be None, got {message['name']}"
-            )
+            assert (
+                message["content"] is not None
+            ), f"Expected content to be not None, got {message['content']}"
+            assert (
+                message["name"] is None
+            ), f"Expected name to be None, got {message['name']}"
             if message["role"] == "user":
                 assert message["content"] == "Test prompt"
             # TODO : cleanup this once we have a way to handle the assistant message

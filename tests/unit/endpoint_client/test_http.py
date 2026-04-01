@@ -21,7 +21,6 @@ from urllib.parse import urlparse
 import httptools
 import pytest
 import pytest_asyncio
-
 from inference_endpoint.endpoint_client.http import (
     ConnectionPool,
     HttpRequestTemplate,

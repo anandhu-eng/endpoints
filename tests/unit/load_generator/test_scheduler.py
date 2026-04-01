@@ -18,8 +18,6 @@ import random
 import threading
 
 import pytest
-from scipy import stats
-
 from inference_endpoint.load_generator.sample import SampleEventHandler
 from inference_endpoint.load_generator.scheduler import (
     ConcurrencyScheduler,
@@ -28,20 +26,21 @@ from inference_endpoint.load_generator.scheduler import (
     WithoutReplacementSampleOrder,
     WithReplacementSampleOrder,
 )
+from scipy import stats
 
 
 def test_without_replacement_sample_order():
     ordering = WithoutReplacementSampleOrder(12345, 100)
     indices = list(iter(ordering))
     for i in range(0, 12345, 100):
-        assert len(set(indices[i : i + 100])) == min(100, 12345 - i), (
-            "Indices should be unique, and occur at least once"
-        )
+        assert len(set(indices[i : i + 100])) == min(
+            100, 12345 - i
+        ), "Indices should be unique, and occur at least once"
 
     # Assert that order is different in each pass of the dataset
-    assert indices[:100] != indices[100:200], (
-        "Order should be different in each pass of the dataset"
-    )
+    assert (
+        indices[:100] != indices[100:200]
+    ), "Order should be different in each pass of the dataset"
 
 
 def test_with_replacement_sample_order(random_seed):
@@ -135,9 +134,9 @@ def test_concurrency_scheduler(concurrency_runtime_settings, target_concurrency)
                 issued_count += 1
                 current_inflight += 1
                 max_inflight = max(max_inflight, current_inflight)
-                assert current_inflight <= target_concurrency, (
-                    f"Concurrency {current_inflight} exceeded limit {target_concurrency}"
-                )
+                assert (
+                    current_inflight <= target_concurrency
+                ), f"Concurrency {current_inflight} exceeded limit {target_concurrency}"
             issued[position].set()
 
     issue_thread = threading.Thread(target=issue_worker, daemon=True)
@@ -158,9 +157,9 @@ def test_concurrency_scheduler(concurrency_runtime_settings, target_concurrency)
             position_to_complete = position - target_concurrency
 
             # Verify next query hasn't issued yet (scheduler is blocking)
-            assert not issued[position].is_set(), (
-                f"Query {position} issued before slot was freed"
-            )
+            assert not issued[
+                position
+            ].is_set(), f"Query {position} issued before slot was freed"
 
             # Free a slot
             can_complete[position_to_complete].set()
@@ -229,17 +228,17 @@ def test_poisson_scheduler_distribution(poisson_runtime_settings, target_qps):
     z_critical = 3.29  # 99.9% two-tailed
     margin_of_error = z_critical * (sample_std / math.sqrt(n))
     assert abs(sample_mean - expected_mean_s) < margin_of_error, (
-        f"Mean {sample_mean * 1000:.3f}ms outside 99.9% CI: "
-        f"[{(expected_mean_s - margin_of_error) * 1000:.3f}, "
-        f"{(expected_mean_s + margin_of_error) * 1000:.3f}] ms"
+        f"Mean {sample_mean*1000:.3f}ms outside 99.9% CI: "
+        f"[{(expected_mean_s - margin_of_error)*1000:.3f}, "
+        f"{(expected_mean_s + margin_of_error)*1000:.3f}] ms"
     )
 
     # Test 2: CV should be close to 1.0 (exponential property: std = mean)
     # Use adaptive tolerance based on sample size, max(10%, 1 std. error)
     cv_tolerance = max(0.10, 1.0 / math.sqrt(n))
-    assert abs(cv - 1.0) < cv_tolerance, (
-        f"CV {cv:.3f} deviates from 1.0 by more than {cv_tolerance:.3f}"
-    )
+    assert (
+        abs(cv - 1.0) < cv_tolerance
+    ), f"CV {cv:.3f} deviates from 1.0 by more than {cv_tolerance:.3f}"
 
     # Test 3: Kolmogorov-Smirnov test for exponential distribution
     # kstest compares data against exponential CDF with scale parameter = mean

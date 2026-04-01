@@ -21,7 +21,6 @@ import time
 import pytest
 import zmq
 import zmq.asyncio
-
 from inference_endpoint.core.types import (
     Query,
     QueryResult,
@@ -268,9 +267,9 @@ class TestHTTPEndpointClientFunctionality:
             client.shutdown()
 
             cancelled = sum(1 for f in futures if f.cancelled())
-            assert cancelled == num_requests, (
-                f"Expected {num_requests} cancelled, got {cancelled}"
-            )
+            assert (
+                cancelled == num_requests
+            ), f"Expected {num_requests} cancelled, got {cancelled}"
 
         finally:
             await server.close()
@@ -423,9 +422,9 @@ class TestHTTPEndpointClientFunctionality:
         # Verify all complete correctly
         for name, prompt, future in futures:
             result = await asyncio.wrap_future(future)
-            assert result.get_response_output_string() == prompt, (
-                f"Mismatch for test case '{name}'"
-            )
+            assert (
+                result.get_response_output_string() == prompt
+            ), f"Mismatch for test case '{name}'"
 
 
 class TestPoll:

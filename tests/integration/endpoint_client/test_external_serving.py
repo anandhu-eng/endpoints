@@ -18,9 +18,9 @@ import logging
 import time
 
 import pytest
-
 from inference_endpoint.core.types import Query
 from inference_endpoint.endpoint_client.config import HTTPClientConfig
+
 from tests.futures_client import FuturesHttpClient
 
 

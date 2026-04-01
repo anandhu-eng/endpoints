@@ -21,7 +21,6 @@ import signal
 import subprocess
 
 import pytest
-
 from inference_endpoint.endpoint_client.config import HTTPClientConfig
 from inference_endpoint.endpoint_client.worker_manager import WorkerManager
 
@@ -95,9 +94,9 @@ def assert_no_zombies(pids: list[int], timeout: float = 1.0) -> None:
         RuntimeError: If ps command fails with unexpected error
     """
     zombie_pids = check_for_zombies(pids, timeout)
-    assert len(zombie_pids) == 0, (
-        f"Found {len(zombie_pids)} zombie process(es): {zombie_pids}"
-    )
+    assert (
+        len(zombie_pids) == 0
+    ), f"Found {len(zombie_pids)} zombie process(es): {zombie_pids}"
 
 
 class TestWorkerLifecycle:
@@ -192,9 +191,9 @@ class TestWorkerLifecycle:
 
         # Verify worker is dead and reaped
         assert not worker.is_alive(), f"Worker should be dead after {signal_type}"
-        assert worker.exitcode is not None, (
-            f"Worker should be reaped after {signal_type}"
-        )
+        assert (
+            worker.exitcode is not None
+        ), f"Worker should be reaped after {signal_type}"
         assert_no_zombies([worker_pid])
         print(f"Worker properly handled {signal_type} and was reaped")
 
@@ -298,9 +297,9 @@ class TestWorkerDeathScenarios:
 
         # CRITICAL: Verify NO zombies after shutdown
         zombies_after = check_for_zombies(original_pids)
-        assert len(zombies_after) == 0, (
-            f"Shutdown failed to reap {len(zombies_after)} zombie(s): {zombies_after}"
-        )
+        assert (
+            len(zombies_after) == 0
+        ), f"Shutdown failed to reap {len(zombies_after)} zombie(s): {zombies_after}"
 
         # Verify all zombies were reaped using assert_no_zombies
         assert_no_zombies(original_pids)
@@ -343,9 +342,9 @@ class TestWorkerDeathScenarios:
         # Verify all workers are dead and reaped (no zombies)
         for worker in manager.workers:
             assert not worker.is_alive()
-            assert worker.exitcode is not None, (
-                "Worker should have exit code (been reaped)"
-            )
+            assert (
+                worker.exitcode is not None
+            ), "Worker should have exit code (been reaped)"
 
         # Verify no zombies in process table after shutdown
         assert_no_zombies(all_pids)

@@ -18,10 +18,6 @@ from __future__ import annotations
 import argparse
 import threading
 
-from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
-from transformers.utils import logging
-
 import inference_endpoint.config.rulesets.mlcommons.models as mlcommons_models
 from inference_endpoint.config.rulesets.mlcommons.rules import CURRENT
 from inference_endpoint.config.user_config import UserConfig
@@ -35,6 +31,9 @@ from inference_endpoint.load_generator import (
     SampleIssuer,
     WithoutReplacementSampleOrder,
 )
+from tqdm import tqdm
+from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
+from transformers.utils import logging
 
 logging.set_verbosity_error()  # Suppress HuggingFace warnings
 

@@ -17,7 +17,6 @@ import logging
 
 import aiohttp
 import pytest
-
 from inference_endpoint.core.types import Query
 from inference_endpoint.dataset_manager import Dataset
 from inference_endpoint.dataset_manager.transforms import ColumnRemap
