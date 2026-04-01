@@ -81,7 +81,7 @@ def compute_summary(
 
     perc_values = np.percentile(arr, percentiles, method="linear")
     perc_dict = {
-        str(p): float(v) for p, v in zip(percentiles, perc_values, strict=False)
+        str(p): float(v) for p, v in zip(percentiles, perc_values, strict=True)
     }
 
     bounds = np.histogram_bin_edges(arr, bins=n_histogram_buckets)
@@ -135,8 +135,6 @@ class Report(msgspec.Struct, frozen=True):  # type: ignore[call-arg]
         if not self.output_sequence_lengths:
             return None
         total = self.output_sequence_lengths.get("total", 0)
-        if not total:
-            return None
         return total / (self.duration_ns / 1e9)
 
     def to_json(self, save_to: os.PathLike | None = None) -> bytes:
@@ -238,7 +236,7 @@ def _display_metric(
         normalize = max_bar_length / max_count if max_count > 0 else 1
         max_label = max(len(s) for s in bucket_strs)
 
-        for label, count in zip(bucket_strs, counts, strict=False):
+        for label, count in zip(bucket_strs, counts, strict=True):
             bar = "#" * int(count * normalize)
             fn(f"  {label:>{max_label}} |{bar} {count}{newline}")
 
