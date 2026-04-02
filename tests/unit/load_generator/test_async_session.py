@@ -1,0 +1,471 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Tests for the async BenchmarkSession."""
+
+from __future__ import annotations
+
+import asyncio
+import random
+
+import pytest
+from inference_endpoint.config.runtime_settings import RuntimeSettings
+from inference_endpoint.config.schema import LoadPattern, LoadPatternType
+from inference_endpoint.core.record import (
+    EventRecord,
+    SampleEventType,
+    SessionEventType,
+)
+from inference_endpoint.core.types import Query, QueryResult, StreamChunk
+from inference_endpoint.dataset_manager.dataset import Dataset
+from inference_endpoint.load_generator.session import (
+    BenchmarkSession,
+    PhaseConfig,
+    PhaseIssuer,
+    PhaseResult,
+    PhaseType,
+    SessionResult,
+)
+from inference_endpoint.metrics.metric import Throughput
+
+# ---------------------------------------------------------------------------
+# Test doubles
+# ---------------------------------------------------------------------------
+
+
+class FakeDataset(Dataset):
+    """In-memory dataset for tests."""
+
+    def __init__(self, n_samples: int = 10):
+        self._n = n_samples
+
+    def load_sample(self, index: int) -> dict:
+        return {"prompt": f"sample_{index}", "model": "test"}
+
+    def num_samples(self) -> int:
+        return self._n
+
+
+class FakeIssuer:
+    """Fake SampleIssuer that queues responses for controlled delivery."""
+
+    def __init__(self, response_delay: float = 0.001):
+        self._issued: list[Query] = []
+        self._response_queue: asyncio.Queue[QueryResult | StreamChunk | None] = (
+            asyncio.Queue()
+        )
+        self._response_delay = response_delay
+        self._auto_respond = True
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def issue(self, query: Query) -> None:
+        self._issued.append(query)
+        if self._auto_respond and self._loop:
+
+            def _enqueue_response(q: Query = query) -> None:
+                self._response_queue.put_nowait(
+                    QueryResult(id=q.id, response_output=None)
+                )
+
+            self._loop.call_later(self._response_delay, _enqueue_response)
+
+    async def recv(self) -> QueryResult | StreamChunk | None:
+        return await self._response_queue.get()
+
+    def shutdown(self) -> None:
+        self._response_queue.put_nowait(None)
+
+    def inject_response(self, resp: QueryResult | StreamChunk) -> None:
+        self._response_queue.put_nowait(resp)
+
+    @property
+    def issued_queries(self) -> list[Query]:
+        return self._issued
+
+
+class FakePublisher:
+    """Captures published EventRecords."""
+
+    def __init__(self):
+        self.events: list[EventRecord] = []
+
+    def publish(self, event_record: EventRecord) -> None:
+        self.events.append(event_record)
+
+    def events_of_type(self, event_type) -> list[EventRecord]:
+        return [e for e in self.events if e.event_type == event_type]
+
+
+def _make_settings(
+    load_pattern: LoadPattern | None = None,
+    n_samples: int = 10,
+    max_duration_ms: int | None = None,
+) -> RuntimeSettings:
+    return RuntimeSettings(
+        metric_target=Throughput(100),
+        reported_metrics=[],
+        min_duration_ms=0,
+        max_duration_ms=max_duration_ms,
+        n_samples_from_dataset=n_samples,
+        n_samples_to_issue=n_samples,
+        min_sample_count=n_samples,
+        rng_sched=random.Random(42),
+        rng_sample_index=random.Random(42),
+        load_pattern=load_pattern or LoadPattern(type=LoadPatternType.MAX_THROUGHPUT),
+    )
+
+
+# ---------------------------------------------------------------------------
+# PhaseIssuer tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestPhaseIssuer:
+    def test_issue_builds_query_and_publishes(self):
+        dataset = FakeDataset(5)
+        issuer = FakeIssuer()
+        issuer._auto_respond = False
+        publisher = FakePublisher()
+        phase_issuer = PhaseIssuer(dataset, issuer, publisher, lambda: False)
+
+        result = phase_issuer.issue(3)
+        assert result is not None
+        assert phase_issuer.issued_count == 1
+        assert phase_issuer.inflight == 1
+        assert len(issuer.issued_queries) == 1
+        assert issuer.issued_queries[0].id == result
+        assert 3 in phase_issuer.uuid_to_index.values()
+
+        # Should have published ISSUED event
+        issued_events = publisher.events_of_type(SampleEventType.ISSUED)
+        assert len(issued_events) == 1
+        assert issued_events[0].sample_uuid == result
+
+    def test_issue_returns_none_when_stopped(self):
+        dataset = FakeDataset(5)
+        issuer = FakeIssuer()
+        issuer._auto_respond = False
+        publisher = FakePublisher()
+        phase_issuer = PhaseIssuer(dataset, issuer, publisher, lambda: True)
+
+        result = phase_issuer.issue(0)
+        assert result is None
+        assert phase_issuer.issued_count == 0
+
+    def test_uuid_is_unique_per_issue(self):
+        dataset = FakeDataset(5)
+        issuer = FakeIssuer()
+        issuer._auto_respond = False
+        publisher = FakePublisher()
+        phase_issuer = PhaseIssuer(dataset, issuer, publisher, lambda: False)
+
+        ids = [phase_issuer.issue(i % 5) for i in range(10)]
+        assert len(set(ids)) == 10
+
+
+# ---------------------------------------------------------------------------
+# BenchmarkSession tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestBenchmarkSession:
+    @pytest.mark.asyncio
+    async def test_single_perf_phase(self):
+        loop = asyncio.get_running_loop()
+        issuer = FakeIssuer()
+        issuer._loop = loop
+        publisher = FakePublisher()
+
+        session = BenchmarkSession(issuer, publisher, loop)
+        phases = [
+            PhaseConfig("perf", _make_settings(n_samples=5), FakeDataset(5)),
+        ]
+        result = await session.run(phases)
+
+        assert len(result.phase_results) == 1
+        assert result.perf_results[0].name == "perf"
+        assert result.perf_results[0].issued_count == 5
+        assert len(result.perf_results[0].uuid_to_index) == 5
+
+        # Check session events
+        started = publisher.events_of_type(SessionEventType.STARTED)
+        ended = publisher.events_of_type(SessionEventType.ENDED)
+        start_track = publisher.events_of_type(
+            SessionEventType.START_PERFORMANCE_TRACKING
+        )
+        stop_track = publisher.events_of_type(
+            SessionEventType.STOP_PERFORMANCE_TRACKING
+        )
+        assert len(started) == 1
+        assert len(ended) == 1
+        assert len(start_track) == 1
+        assert len(stop_track) == 1
+
+    @pytest.mark.asyncio
+    async def test_accuracy_phase(self):
+        loop = asyncio.get_running_loop()
+        issuer = FakeIssuer()
+        issuer._loop = loop
+        publisher = FakePublisher()
+
+        session = BenchmarkSession(issuer, publisher, loop)
+        phases = [
+            PhaseConfig(
+                "acc", _make_settings(n_samples=3), FakeDataset(3), PhaseType.ACCURACY
+            ),
+        ]
+        result = await session.run(phases)
+
+        assert len(result.accuracy_results) == 1
+        assert result.accuracy_results[0].issued_count == 3
+        # No tracking events for accuracy
+        assert (
+            len(publisher.events_of_type(SessionEventType.START_PERFORMANCE_TRACKING))
+            == 0
+        )
+
+    @pytest.mark.asyncio
+    async def test_saturation_produces_no_result(self):
+        loop = asyncio.get_running_loop()
+        issuer = FakeIssuer()
+        issuer._loop = loop
+        publisher = FakePublisher()
+
+        session = BenchmarkSession(issuer, publisher, loop)
+        phases = [
+            PhaseConfig(
+                "warmup",
+                _make_settings(n_samples=3),
+                FakeDataset(3),
+                PhaseType.SATURATION,
+            ),
+        ]
+        result = await session.run(phases)
+        assert len(result.phase_results) == 0
+
+    @pytest.mark.asyncio
+    async def test_multi_phase(self):
+        loop = asyncio.get_running_loop()
+        issuer = FakeIssuer()
+        issuer._loop = loop
+        publisher = FakePublisher()
+
+        session = BenchmarkSession(issuer, publisher, loop)
+        phases = [
+            PhaseConfig(
+                "warmup",
+                _make_settings(n_samples=2),
+                FakeDataset(2),
+                PhaseType.SATURATION,
+            ),
+            PhaseConfig(
+                "perf",
+                _make_settings(n_samples=5),
+                FakeDataset(5),
+                PhaseType.PERFORMANCE,
+            ),
+            PhaseConfig(
+                "acc", _make_settings(n_samples=3), FakeDataset(3), PhaseType.ACCURACY
+            ),
+        ]
+        result = await session.run(phases)
+
+        assert len(result.perf_results) == 1
+        assert result.perf_results[0].issued_count == 5
+        assert len(result.accuracy_results) == 1
+        assert result.accuracy_results[0].issued_count == 3
+
+    @pytest.mark.asyncio
+    async def test_stop_terminates_early(self):
+        loop = asyncio.get_running_loop()
+        issuer = FakeIssuer()
+        issuer._loop = loop
+        publisher = FakePublisher()
+
+        session = BenchmarkSession(issuer, publisher, loop)
+
+        # Stop after a short delay
+        loop.call_later(0.05, session.stop)
+
+        phases = [
+            PhaseConfig(
+                "perf",
+                _make_settings(n_samples=100_000, max_duration_ms=10_000),
+                FakeDataset(100),
+            ),
+        ]
+        result = await session.run(phases)
+        # Should have stopped early, not issued all 100k
+        assert result.perf_results[0].issued_count < 100_000
+
+    @pytest.mark.asyncio
+    async def test_on_sample_complete_callback(self):
+        loop = asyncio.get_running_loop()
+        issuer = FakeIssuer()
+        issuer._loop = loop
+        publisher = FakePublisher()
+
+        completed: list[str] = []
+
+        def on_complete(result: QueryResult) -> None:
+            completed.append(result.id)
+
+        session = BenchmarkSession(
+            issuer, publisher, loop, on_sample_complete=on_complete
+        )
+        phases = [
+            PhaseConfig("perf", _make_settings(n_samples=5), FakeDataset(5)),
+        ]
+        await session.run(phases)
+        assert len(completed) == 5
+
+    @pytest.mark.asyncio
+    async def test_stale_completions_ignored_by_strategy(self):
+        """Responses from saturation phase should not affect perf phase strategy."""
+        loop = asyncio.get_running_loop()
+        publisher = FakePublisher()
+
+        # Issuer that delays responses significantly so they arrive in next phase
+        issuer = FakeIssuer(response_delay=0.1)
+        issuer._loop = loop
+
+        session = BenchmarkSession(issuer, publisher, loop)
+
+        concurrency_settings = _make_settings(
+            load_pattern=LoadPattern(
+                type=LoadPatternType.CONCURRENCY, target_concurrency=2
+            ),
+            n_samples=3,
+        )
+        phases = [
+            PhaseConfig(
+                "sat", _make_settings(n_samples=2), FakeDataset(2), PhaseType.SATURATION
+            ),
+            PhaseConfig(
+                "perf", concurrency_settings, FakeDataset(3), PhaseType.PERFORMANCE
+            ),
+        ]
+        result = await session.run(phases)
+
+        # Perf phase should complete with its own samples, not be confused by stale ones
+        assert len(result.perf_results) == 1
+        assert result.perf_results[0].issued_count == 3
+
+    @pytest.mark.asyncio
+    async def test_recv_none_triggers_stop(self):
+        """If issuer.recv() returns None mid-phase, drain should abort quickly."""
+        loop = asyncio.get_running_loop()
+        publisher = FakePublisher()
+
+        issuer = FakeIssuer()
+        issuer._loop = loop
+        issuer._auto_respond = False
+
+        session = BenchmarkSession(issuer, publisher, loop)
+        phases = [
+            PhaseConfig("perf", _make_settings(n_samples=5), FakeDataset(5)),
+        ]
+
+        # Schedule transport close after a short delay — recv returns None
+        loop.call_later(0.05, issuer.shutdown)
+
+        # Session should complete quickly — recv None sets stop_requested,
+        # which aborts drain. wait_for prevents CI hang if this regresses.
+        result = await asyncio.wait_for(session.run(phases), timeout=10.0)
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_stream_chunk_complete_decrements_inflight(self):
+        """StreamChunk(is_complete=True) should decrement inflight like QueryResult."""
+        loop = asyncio.get_running_loop()
+        publisher = FakePublisher()
+
+        issuer = FakeIssuer()
+        issuer._loop = loop
+        issuer._auto_respond = False
+
+        session = BenchmarkSession(issuer, publisher, loop)
+
+        # Use concurrency=1 so we can observe gating
+        settings = _make_settings(
+            load_pattern=LoadPattern(
+                type=LoadPatternType.CONCURRENCY, target_concurrency=1
+            ),
+            n_samples=2,
+        )
+        phases = [PhaseConfig("perf", settings, FakeDataset(2))]
+
+        async def inject_stream_completions():
+            """Wait for issues, then complete them via StreamChunk(is_complete=True)."""
+            while not issuer._issued:
+                await asyncio.sleep(0.005)
+            # Complete first query with terminal StreamChunk
+            q1 = issuer._issued[0]
+            issuer.inject_response(StreamChunk(id=q1.id, is_complete=True))
+            # Wait for second issue
+            while len(issuer._issued) < 2:
+                await asyncio.sleep(0.005)
+            q2 = issuer._issued[1]
+            issuer.inject_response(StreamChunk(id=q2.id, is_complete=True))
+
+        injector = asyncio.create_task(inject_stream_completions())
+        result = await asyncio.wait_for(session.run(phases), timeout=5.0)
+        await injector
+
+        # Both samples should have been issued — semaphore was released by StreamChunk
+        assert result.perf_results[0].issued_count == 2
+
+    @pytest.mark.asyncio
+    async def test_concurrency_strategy_transport_close_no_deadlock(self):
+        """ConcurrencyStrategy must not deadlock when transport closes mid-phase."""
+        loop = asyncio.get_running_loop()
+        publisher = FakePublisher()
+
+        issuer = FakeIssuer(response_delay=999)  # Responses never arrive in time
+        issuer._loop = loop
+        issuer._auto_respond = False
+
+        session = BenchmarkSession(issuer, publisher, loop)
+        settings = _make_settings(
+            load_pattern=LoadPattern(
+                type=LoadPatternType.CONCURRENCY, target_concurrency=2
+            ),
+            n_samples=100,
+        )
+        phases = [PhaseConfig("perf", settings, FakeDataset(10))]
+
+        # Close transport after strategy issues initial batch and blocks on semaphore
+        loop.call_later(0.1, issuer.shutdown)
+
+        # Must complete without deadlock — wait_for prevents CI hang
+        result = await asyncio.wait_for(session.run(phases), timeout=5.0)
+        assert result is not None
+
+
+@pytest.mark.unit
+class TestSessionResult:
+    def test_perf_results_filter(self):
+        results = [
+            PhaseResult("sat", PhaseType.SATURATION, {}, 0, 0, 0),
+            PhaseResult("perf1", PhaseType.PERFORMANCE, {"a": 1}, 10, 0, 100),
+            PhaseResult("perf2", PhaseType.PERFORMANCE, {"b": 2}, 20, 100, 200),
+            PhaseResult("acc", PhaseType.ACCURACY, {"c": 3}, 5, 200, 300),
+        ]
+        sr = SessionResult("test", results, 0, 300)
+        assert len(sr.perf_results) == 2
+        assert len(sr.accuracy_results) == 1
+        assert sr.perf_results[0].name == "perf1"
