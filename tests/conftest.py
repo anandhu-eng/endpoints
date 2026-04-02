@@ -466,9 +466,3 @@ def concurrency_runtime_settings(random_seed, target_concurrency):
             type=LoadPatternType.CONCURRENCY, target_concurrency=target_concurrency
         ),
     )
-
-
-@pytest.fixture
-def clean_sample_event_hooks():
-    """Legacy fixture — no-op now that SampleEventHandler has been removed."""
-    yield None
