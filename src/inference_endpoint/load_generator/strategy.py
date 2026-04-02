@@ -119,22 +119,35 @@ class TimedIssueStrategy:
         cumulative_s = 0.0
 
         def schedule_next():
-            nonlocal cumulative_s
-            idx = next(self._sample_order, None)
-            if idx is None:
+            nonlocal cumulative_s, error
+            try:
+                idx = next(self._sample_order, None)
+                if idx is None:
+                    done.set()
+                    return
+                cumulative_s += self._delay_fn() / 1e9
+                self._loop.call_at(start_time + cumulative_s, fire, idx)
+            except Exception as exc:
+                error = exc
                 done.set()
-                return
-            cumulative_s += self._delay_fn() / 1e9
-            self._loop.call_at(start_time + cumulative_s, fire, idx)
+
+        error: BaseException | None = None
 
         def fire(idx: int):
-            if phase_issuer.issue(idx) is None:
+            nonlocal error
+            try:
+                if phase_issuer.issue(idx) is None:
+                    done.set()
+                    return
+                schedule_next()
+            except Exception as exc:
+                error = exc
                 done.set()
-                return
-            schedule_next()
 
         schedule_next()
         await done.wait()
+        if error is not None:
+            raise error
         return phase_issuer.issued_count
 
     async def _execute_executor(self, phase_issuer: PhaseIssuerProtocol) -> int:
@@ -174,16 +187,24 @@ class BurstStrategy:
 
     async def execute(self, phase_issuer: PhaseIssuerProtocol) -> int:
         done = asyncio.Event()
+        error: BaseException | None = None
 
         def issue_next():
-            idx = next(self._sample_order, None)
-            if idx is None or phase_issuer.issue(idx) is None:
+            nonlocal error
+            try:
+                idx = next(self._sample_order, None)
+                if idx is None or phase_issuer.issue(idx) is None:
+                    done.set()
+                    return
+                self._loop.call_soon(issue_next)
+            except Exception as exc:
+                error = exc
                 done.set()
-                return
-            self._loop.call_soon(issue_next)
 
         self._loop.call_soon(issue_next)
         await done.wait()
+        if error is not None:
+            raise error
         return phase_issuer.issued_count
 
     def on_query_complete(self, query_id: str) -> None:

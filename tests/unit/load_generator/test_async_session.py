@@ -455,6 +455,85 @@ class TestBenchmarkSession:
         result = await asyncio.wait_for(session.run(phases), timeout=5.0)
         assert result is not None
 
+    @pytest.mark.asyncio
+    async def test_on_sample_complete_called_for_stream_chunk_complete(self):
+        """Bug #4: on_sample_complete must fire for StreamChunk(is_complete=True)."""
+        loop = asyncio.get_running_loop()
+        publisher = FakePublisher()
+
+        issuer = FakeIssuer()
+        issuer._loop = loop
+        issuer._auto_respond = False
+
+        completed_ids: list[str] = []
+
+        def on_complete(result: QueryResult | StreamChunk) -> None:
+            completed_ids.append(result.id)
+
+        session = BenchmarkSession(
+            issuer, publisher, loop, on_sample_complete=on_complete
+        )
+        settings = _make_settings(
+            load_pattern=LoadPattern(
+                type=LoadPatternType.CONCURRENCY, target_concurrency=1
+            ),
+            n_samples=1,
+        )
+        phases = [PhaseConfig("perf", settings, FakeDataset(1))]
+
+        async def inject():
+            while not issuer._issued:
+                await asyncio.sleep(0.005)
+            q = issuer._issued[0]
+            issuer.inject_response(StreamChunk(id=q.id, is_complete=True))
+
+        asyncio.create_task(inject())
+        await asyncio.wait_for(session.run(phases), timeout=5.0)
+
+        # on_sample_complete should have been called for the terminal StreamChunk
+        assert len(completed_ids) == 1
+
+    @pytest.mark.asyncio
+    async def test_failed_query_published_as_error_event(self):
+        """Bug #5: QueryResult with error should publish ErrorEventType, not just COMPLETE."""
+        loop = asyncio.get_running_loop()
+        publisher = FakePublisher()
+
+        issuer = FakeIssuer()
+        issuer._loop = loop
+        issuer._auto_respond = False
+
+        session = BenchmarkSession(issuer, publisher, loop)
+        settings = _make_settings(n_samples=1)
+        phases = [PhaseConfig("perf", settings, FakeDataset(1))]
+
+        async def inject_error():
+            while not issuer._issued:
+                await asyncio.sleep(0.005)
+            q = issuer._issued[0]
+            from inference_endpoint.core.types import ErrorData
+
+            issuer.inject_response(
+                QueryResult(
+                    id=q.id,
+                    error=ErrorData(error_type="timeout", error_message="timed out"),
+                )
+            )
+
+        asyncio.create_task(inject_error())
+        await asyncio.wait_for(session.run(phases), timeout=5.0)
+
+        # Should have published both COMPLETE and an error event
+        from inference_endpoint.core.record import ErrorEventType
+
+        complete_events = publisher.events_of_type(SampleEventType.COMPLETE)
+        error_events = [
+            e for e in publisher.events if isinstance(e.event_type, ErrorEventType)
+        ]
+        assert len(complete_events) == 1
+        # Bug #5: error event should also be published
+        assert len(error_events) == 1
+
 
 @pytest.mark.unit
 class TestSessionResult:

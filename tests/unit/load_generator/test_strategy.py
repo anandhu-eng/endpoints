@@ -420,6 +420,53 @@ class TestEdgeCases:
         count = await strategy.execute(issuer)
         assert count == 0
 
+    @pytest.mark.asyncio
+    async def test_burst_exception_in_issue_does_not_hang(self):
+        """If issue() raises, strategy should not hang forever."""
+        loop = asyncio.get_running_loop()
+        order = WithoutReplacementSampleOrder(
+            n_samples_in_dataset=10, rng=random.Random(42)
+        )
+        strategy = BurstStrategy(order, loop)
+
+        class FailingIssuer:
+            issued_count = 0
+
+            def issue(self, idx: int) -> str | None:
+                self.issued_count += 1
+                if self.issued_count == 3:
+                    raise RuntimeError("load_sample failed")
+                return f"q{self.issued_count}"
+
+        issuer = FailingIssuer()
+        # Must not hang — should complete (with error) within timeout
+        with pytest.raises(RuntimeError, match="load_sample failed"):
+            await asyncio.wait_for(strategy.execute(issuer), timeout=5.0)
+
+    @pytest.mark.asyncio
+    async def test_timed_call_at_exception_in_issue_does_not_hang(self):
+        """If issue() raises in call_at callback, strategy should not hang."""
+        loop = asyncio.get_running_loop()
+        order = WithoutReplacementSampleOrder(
+            n_samples_in_dataset=10, rng=random.Random(42)
+        )
+        strategy = TimedIssueStrategy(
+            _constant_delay(1_000), order, loop, use_executor=False
+        )
+
+        class FailingIssuer:
+            issued_count = 0
+
+            def issue(self, idx: int) -> str | None:
+                self.issued_count += 1
+                if self.issued_count == 3:
+                    raise RuntimeError("load_sample failed")
+                return f"q{self.issued_count}"
+
+        issuer = FailingIssuer()
+        with pytest.raises(RuntimeError, match="load_sample failed"):
+            await asyncio.wait_for(strategy.execute(issuer), timeout=5.0)
+
     def test_sample_order_single_element(self):
         order = WithoutReplacementSampleOrder(
             n_samples_in_dataset=1, rng=random.Random(42)

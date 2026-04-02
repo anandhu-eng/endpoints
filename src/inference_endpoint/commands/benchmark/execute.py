@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shutil
 import signal
 import tempfile
 import uuid
@@ -35,6 +36,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 
+import msgspec.json
 from tqdm import tqdm
 from transformers.utils import logging as transformers_logging
 
@@ -112,6 +114,16 @@ class ResponseCollector:
             self.responses[result.id] = result.get_response_output_string()
         if self.pbar:
             self.pbar.update(1)
+
+
+@dataclass
+class BenchmarkResult:
+    """Output of run_benchmark_async — all data needed for finalization."""
+
+    session: SessionResult
+    collector: ResponseCollector
+    report: Report | None
+    tmpfs_dir: Path
 
 
 @dataclass
@@ -381,8 +393,8 @@ def _setup_kv_reader(
 async def _run_benchmark_async(
     ctx: BenchmarkContext,
     loop: asyncio.AbstractEventLoop,
-) -> tuple[SessionResult, ResponseCollector, Report | None]:
-    """Run async benchmark session. Returns (SessionResult, ResponseCollector, Report)."""
+) -> BenchmarkResult:
+    """Run async benchmark session."""
     config = ctx.config
     session_id = f"cli_benchmark_{uuid.uuid4().hex[:8]}"
 
@@ -401,15 +413,22 @@ async def _run_benchmark_async(
     pub_socket_name = f"ev_pub_{session_id[:8]}"
     publisher = ZmqEventRecordPublisher(pub_socket_name, zmq_ctx, loop=loop)
 
-    # Metrics directory for KVStore (mmap-backed, on /dev/shm if available)
-    metrics_dir = ctx.report_dir / "metrics"
+    # Tmpfs directories for high-frequency writes (metrics mmap + event log)
+    # These are memory-backed; copied to report_dir on disk during finalization.
+    shm_base = (
+        Path("/dev/shm") if Path("/dev/shm").exists() else Path(tempfile.gettempdir())
+    )
+    tmpfs_dir = shm_base / f"benchmark_{session_id}"
+    tmpfs_dir.mkdir(parents=True, exist_ok=True)
+    metrics_dir = tmpfs_dir / "metrics"
     metrics_dir.mkdir(parents=True, exist_ok=True)
+    event_log_dir = tmpfs_dir / "events"
+    event_log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Launch MetricsAggregator service subprocess
+    # Launch service subprocesses
     launcher = ServiceLauncher(zmq_ctx)
-    assert (
-        zmq_ctx.socket_dir is not None
-    ), "ZMQ socket_dir must be set after publisher bind"
+    if zmq_ctx.socket_dir is None:
+        raise RuntimeError("ZMQ socket_dir must be set after publisher bind")
     aggregator_args: list[str] = [
         "--socket-dir",
         zmq_ctx.socket_dir,
@@ -423,11 +442,27 @@ async def _run_benchmark_async(
     if ctx.tokenizer_name is not None:
         aggregator_args.extend(["--tokenizer", ctx.tokenizer_name])
 
+    # EventLoggerService writes events.jsonl to tmpfs (high-frequency writes)
+    event_logger_args: list[str] = [
+        "--log-dir",
+        str(event_log_dir),
+        "--socket-dir",
+        zmq_ctx.socket_dir,
+        "--socket-name",
+        pub_socket_name,
+        "--writers",
+        "jsonl",
+    ]
+
     await launcher.launch(
         [
             ServiceConfig(
                 module="inference_endpoint.async_utils.services.metrics_aggregator",
                 args=aggregator_args,
+            ),
+            ServiceConfig(
+                module="inference_endpoint.async_utils.services.event_logger",
+                args=event_logger_args,
             ),
         ],
         timeout=30.0,
@@ -494,30 +529,65 @@ async def _run_benchmark_async(
         zmq_ctx.cleanup()
         pbar.close()
 
-    return result, collector, report
+    return BenchmarkResult(
+        session=result, collector=collector, report=report, tmpfs_dir=tmpfs_dir
+    )
 
 
-def run_benchmark_async(
-    ctx: BenchmarkContext,
-) -> tuple[SessionResult, ResponseCollector, Report | None]:
+def run_benchmark_async(ctx: BenchmarkContext) -> BenchmarkResult:
     """Run async benchmark. Sync entry point — drives the event loop."""
     loop = LoopManager().default_loop
     return loop.run_until_complete(_run_benchmark_async(ctx, loop))
 
 
-def finalize_benchmark(
+def _write_scoring_artifacts(
     ctx: BenchmarkContext,
     result: SessionResult,
-    collector: ResponseCollector,
-    report: Report | None = None,
+    tmpfs_dir: Path,
 ) -> None:
+    """Write sample_idx_map.json and copy events.jsonl for Scorer consumption.
+
+    events.jsonl is written by EventLoggerService to tmpfs during the benchmark.
+    We copy it to report_dir (typically on disk) during finalization.
+    """
+
+    # sample_idx_map.json — {dataset_name: {uuid: sample_index}}
+    sample_idx_map: dict[str, dict[str, int]] = {}
+    for phase_result in result.phase_results:
+        sample_idx_map[phase_result.name] = phase_result.uuid_to_index
+
+    map_path = ctx.report_dir / "sample_idx_map.json"
+    with map_path.open("wb") as f:
+        f.write(msgspec.json.format(msgspec.json.encode(sample_idx_map), indent=2))
+    logger.debug(f"Wrote {map_path}")
+
+    # Copy events.jsonl from tmpfs to report_dir
+    src_events = tmpfs_dir / "events" / "events.jsonl"
+    if src_events.exists():
+        dst_events = ctx.report_dir / "events.jsonl"
+        shutil.copy2(src_events, dst_events)
+        logger.debug(f"Copied {src_events} -> {dst_events}")
+    else:
+        logger.warning(f"events.jsonl not found at {src_events}")
+
+    # Clean up tmpfs
+    shutil.rmtree(tmpfs_dir, ignore_errors=True)
+
+
+def finalize_benchmark(ctx: BenchmarkContext, bench: BenchmarkResult) -> None:
     """Score accuracy, aggregate results, write JSON."""
     config = ctx.config
+    result = bench.session
+    collector = bench.collector
+    report = bench.report
 
     # Display report if available (from MetricsAggregator KVStore)
     if report is not None:
         report.display(fn=lambda s: logger.info(s), summary_only=True)
         report.to_json(save_to=ctx.report_dir / "result_summary.json")
+
+    # Write scoring artifacts + copy event log from tmpfs to disk
+    _write_scoring_artifacts(ctx, result, bench.tmpfs_dir)
 
     # Accuracy scoring
     accuracy_scores: dict[str, Any] = {}
@@ -559,7 +629,7 @@ def finalize_benchmark(
         qps = total_issued / perf_elapsed if perf_elapsed > 0 else 0.0
 
     logger.info(f"Completed in {perf_elapsed:.1f}s")
-    logger.info(f"Results: {total_issued - n_errors}/{total_issued} successful")
+    logger.info(f"Results: {max(0, total_issued - n_errors)}/{total_issued} successful")
     if qps > 0:
         logger.info(f"Estimated QPS: {qps:.1f}")
 
@@ -580,7 +650,7 @@ def finalize_benchmark(
             },
             "results": {
                 "total": total_issued,
-                "successful": total_issued - n_errors,
+                "successful": max(0, total_issued - n_errors),
                 "failed": n_errors,
                 "elapsed_time": perf_elapsed,
                 "qps": qps,
@@ -610,8 +680,8 @@ def run_benchmark(config: BenchmarkConfig, test_mode: TestMode) -> None:
     )
     ctx = setup_benchmark(config, test_mode)
     try:
-        result, collector, report = run_benchmark_async(ctx)
+        bench = run_benchmark_async(ctx)
     except KeyboardInterrupt:
         logger.warning("Benchmark interrupted by user")
         return
-    finalize_benchmark(ctx, result, collector, report)
+    finalize_benchmark(ctx, bench)

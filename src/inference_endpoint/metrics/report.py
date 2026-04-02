@@ -177,6 +177,8 @@ class Report(msgspec.Struct, frozen=True):  # type: ignore[call-arg]
             test_started_at=0,  # TODO: add test_started_at counter to aggregator
             n_samples_issued=_counter("tracked_samples_issued"),
             n_samples_completed=_counter("tracked_samples_completed"),
+            # TODO: Add tracked_samples_failed to MetricCounterKey.
+            # For now, total_samples_failed is the best available.
             n_samples_failed=_counter("total_samples_failed"),
             duration_ns=duration_ns if duration_ns > 0 else None,
             ttft=_summarize("ttft_ns"),

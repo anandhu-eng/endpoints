@@ -30,7 +30,12 @@ from enum import Enum
 from typing import Protocol
 
 from ..config.runtime_settings import RuntimeSettings
-from ..core.record import EventRecord, SampleEventType, SessionEventType
+from ..core.record import (
+    ErrorEventType,
+    EventRecord,
+    SampleEventType,
+    SessionEventType,
+)
 from ..core.types import PromptData, Query, QueryResult, StreamChunk
 from ..dataset_manager.dataset import Dataset
 from .sample_order import create_sample_order
@@ -225,6 +230,7 @@ class BenchmarkSession:
         self._current_strategy: LoadStrategy | None = None
         self._recv_task: asyncio.Task | None = None
         self._strategy_task: asyncio.Task | None = None
+        self._drain_event = asyncio.Event()
 
     def stop(self) -> None:
         """Signal early termination. Safe to call from signal handler.
@@ -333,23 +339,16 @@ class BenchmarkSession:
 
     async def _drain_inflight(self, phase_issuer: PhaseIssuer) -> None:
         """Wait for all in-flight responses from this phase to complete."""
-        timeout = 60.0
-        deadline = time.monotonic() + timeout
-        while phase_issuer.inflight > 0:
-            if self._stop_requested:
-                logger.warning(
-                    "Drain aborted (stop requested): %d responses still in-flight",
-                    phase_issuer.inflight,
-                )
-                break
-            if time.monotonic() > deadline:
-                logger.warning(
-                    "Drain timeout: %d responses still in-flight after %.0fs",
-                    phase_issuer.inflight,
-                    timeout,
-                )
-                break
-            await asyncio.sleep(0.01)
+        if phase_issuer.inflight <= 0 or self._stop_requested:
+            return
+        self._drain_event.clear()
+        try:
+            await asyncio.wait_for(self._drain_event.wait(), timeout=60.0)
+        except TimeoutError:
+            logger.warning(
+                "Drain timeout: %d responses still in-flight after 60s",
+                phase_issuer.inflight,
+            )
 
     async def _receive_responses(self) -> None:
         """Receive responses from the issuer. Runs as a concurrent task."""
@@ -360,6 +359,7 @@ class BenchmarkSession:
                 # and drain don't hang waiting for responses that will never arrive.
                 logger.warning("Issuer recv() returned None — transport closed")
                 self._stop_requested = True
+                self._drain_event.set()  # Unblock _drain_inflight
                 # Cancel the strategy task if it's blocked (e.g., ConcurrencyStrategy
                 # awaiting sem.acquire() that will never be released).
                 if self._strategy_task and not self._strategy_task.done():
@@ -388,9 +388,21 @@ class BenchmarkSession:
                     data=resp.response_output,
                 )
             )
+            # Publish error event so MetricsAggregator counts failures
+            if resp.error is not None:
+                self._publisher.publish(
+                    EventRecord(
+                        event_type=ErrorEventType.GENERIC,
+                        timestamp_ns=time.monotonic_ns(),
+                        sample_uuid=query_id,
+                        data=resp.error,
+                    )
+                )
             # Only affect current phase state if this is a current-phase query
             if phase_issuer is not None and query_id in phase_issuer.uuid_to_index:
                 phase_issuer.inflight -= 1
+                if phase_issuer.inflight <= 0:
+                    self._drain_event.set()
                 if self._current_strategy:
                     self._current_strategy.on_query_complete(query_id)
                 if self._on_sample_complete:
@@ -417,8 +429,12 @@ class BenchmarkSession:
                 and resp.id in phase_issuer.uuid_to_index
             ):
                 phase_issuer.inflight -= 1
+                if phase_issuer.inflight <= 0:
+                    self._drain_event.set()
                 if self._current_strategy:
                     self._current_strategy.on_query_complete(resp.id)
+                if self._on_sample_complete:
+                    self._on_sample_complete(resp)
 
     def _make_stop_check(
         self, settings: RuntimeSettings, phase_start_ns: int
