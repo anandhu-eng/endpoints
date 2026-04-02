@@ -306,7 +306,12 @@ def setup_benchmark(config: BenchmarkConfig, test_mode: TestMode) -> BenchmarkCo
 
 
 def run_benchmark_threaded(ctx: BenchmarkContext) -> tuple[Any, ResponseCollector]:
-    """Run benchmark session with threaded HTTP client. Returns (report, collector)."""
+    """Run benchmark session with threaded HTTP client. Returns (report, collector).
+
+    DEPRECATED: This function uses the old threading-based BenchmarkSession which
+    has been replaced by the async BenchmarkSession. It will be replaced by
+    run_benchmark_async in a future commit. See docs/load_generator/design.md.
+    """
     config = ctx.config
 
     # Setup response collector
