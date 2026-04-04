@@ -344,17 +344,16 @@ class BenchmarkSession:
         )
 
     async def _drain_inflight(self, phase_issuer: PhaseIssuer) -> None:
-        """Wait for all in-flight responses from this phase to complete."""
+        """Wait for all in-flight responses from this phase to complete.
+
+        Currently, there is no timeout for the drain step. In the future,
+        we can possibly add a dynamic timeout based on the rate of completion
+        throughout the current phase."""
         if phase_issuer.inflight <= 0 or self._stop_requested:
             return
+        logger.info("Draining %d in-flight responses...", phase_issuer.inflight)
         self._drain_event.clear()
-        try:
-            await asyncio.wait_for(self._drain_event.wait(), timeout=60.0)
-        except TimeoutError:
-            logger.warning(
-                "Drain timeout: %d responses still in-flight after 60s",
-                phase_issuer.inflight,
-            )
+        await self._drain_event.wait()
 
     async def _receive_responses(self) -> None:
         """Receive responses from the issuer. Runs as a concurrent task."""
