@@ -184,14 +184,21 @@ class PhaseIssuer:
         query = Query(id=query_id, data=data)
         self.uuid_to_index[query_id] = sample_index
         ts = time.monotonic_ns()
+        prompt_data: PromptData
+        if isinstance(data, dict):
+            token_ids = data.get("input_tokens") or data.get("token_ids")
+            prompt_data = PromptData(
+                text=data.get("prompt"),
+                token_ids=tuple(token_ids) if token_ids is not None else None,
+            )
+        else:
+            prompt_data = PromptData()
         self._publisher.publish(
             EventRecord(
                 event_type=SampleEventType.ISSUED,
                 timestamp_ns=ts,
                 sample_uuid=query_id,
-                data=PromptData(
-                    text=data.get("prompt") if isinstance(data, dict) else None
-                ),
+                data=prompt_data,
             )
         )
         self._issuer.issue(query)

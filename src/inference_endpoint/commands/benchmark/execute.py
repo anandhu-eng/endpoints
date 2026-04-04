@@ -37,6 +37,7 @@ from typing import Any
 from urllib.parse import urljoin
 
 import msgspec.json
+from huggingface_hub import model_info
 from tqdm import tqdm
 from transformers.utils import logging as transformers_logging
 
@@ -179,8 +180,6 @@ def _check_tokenizer_exists(model_name: str) -> bool:
     by Harmony transforms (each loads their own instance as needed).
     """
     try:
-        from huggingface_hub import model_info
-
         info = model_info(model_name)
         # Check for tokenizer files in the repo
         siblings = {s.rfilename for s in (info.siblings or [])}

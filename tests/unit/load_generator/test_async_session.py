@@ -546,6 +546,322 @@ class TestBenchmarkSession:
 
 
 @pytest.mark.unit
+class TestBenchmarkSessionPoissonIntegration:
+    """Poisson strategy (TimedIssueStrategy) integration with session."""
+
+    @pytest.mark.asyncio
+    async def test_poisson_issues_all_samples(self):
+        loop = asyncio.get_running_loop()
+        issuer = FakeIssuer()
+        issuer._loop = loop
+        publisher = FakePublisher()
+
+        session = BenchmarkSession(issuer, publisher, loop)
+        poisson_settings = _make_settings(
+            load_pattern=LoadPattern(type=LoadPatternType.POISSON, target_qps=5000.0),
+            n_samples=8,
+        )
+        phases = [
+            PhaseConfig("perf", poisson_settings, FakeDataset(8)),
+        ]
+        result = await asyncio.wait_for(session.run(phases), timeout=10.0)
+
+        assert len(result.perf_results) == 1
+        assert result.perf_results[0].issued_count == 8
+
+    @pytest.mark.asyncio
+    async def test_poisson_respects_stop(self):
+        loop = asyncio.get_running_loop()
+        issuer = FakeIssuer()
+        issuer._loop = loop
+        publisher = FakePublisher()
+
+        session = BenchmarkSession(issuer, publisher, loop)
+        poisson_settings = _make_settings(
+            load_pattern=LoadPattern(type=LoadPatternType.POISSON, target_qps=100.0),
+            n_samples=100_000,
+            max_duration_ms=60_000,
+        )
+        phases = [
+            PhaseConfig("perf", poisson_settings, FakeDataset(100)),
+        ]
+        loop.call_later(0.05, session.stop)
+        result = await asyncio.wait_for(session.run(phases), timeout=10.0)
+        assert result.perf_results[0].issued_count < 100_000
+
+
+@pytest.mark.unit
+class TestBenchmarkSessionMaxDuration:
+    """max_duration_ms timeout: phase stops after duration even with samples remaining."""
+
+    @pytest.mark.asyncio
+    async def test_max_duration_stops_phase(self):
+        loop = asyncio.get_running_loop()
+        issuer = FakeIssuer()
+        issuer._loop = loop
+        publisher = FakePublisher()
+
+        session = BenchmarkSession(issuer, publisher, loop)
+        # Very short max_duration with many samples to issue
+        settings = _make_settings(
+            load_pattern=LoadPattern(type=LoadPatternType.POISSON, target_qps=10.0),
+            n_samples=100_000,
+            max_duration_ms=50,
+        )
+        phases = [PhaseConfig("perf", settings, FakeDataset(100))]
+        result = await asyncio.wait_for(session.run(phases), timeout=10.0)
+
+        # Should have stopped well before issuing all samples
+        assert result.perf_results[0].issued_count < 100_000
+
+    @pytest.mark.asyncio
+    async def test_max_duration_with_burst(self):
+        loop = asyncio.get_running_loop()
+        issuer = FakeIssuer()
+        issuer._loop = loop
+        publisher = FakePublisher()
+
+        session = BenchmarkSession(issuer, publisher, loop)
+        settings = _make_settings(n_samples=1_000_000, max_duration_ms=20)
+        phases = [PhaseConfig("perf", settings, FakeDataset(100))]
+        result = await asyncio.wait_for(session.run(phases), timeout=10.0)
+
+        # Burst fires fast, but stop_check should cut it short
+        assert result.perf_results[0].issued_count < 1_000_000
+
+
+@pytest.mark.unit
+class TestBenchmarkSessionAccuracyErrorHandling:
+    """Error handling in accuracy phase: query fails, verify it doesn't corrupt scoring."""
+
+    @pytest.mark.asyncio
+    async def test_failed_query_in_accuracy_phase_preserves_uuid_map(self):
+        loop = asyncio.get_running_loop()
+        publisher = FakePublisher()
+        issuer = FakeIssuer()
+        issuer._loop = loop
+        issuer._auto_respond = False
+
+        completed_results: list[QueryResult | StreamChunk] = []
+
+        def on_complete(result: QueryResult | StreamChunk) -> None:
+            completed_results.append(result)
+
+        session = BenchmarkSession(
+            issuer, publisher, loop, on_sample_complete=on_complete
+        )
+        settings = _make_settings(n_samples=3)
+        phases = [
+            PhaseConfig("acc", settings, FakeDataset(3), PhaseType.ACCURACY),
+        ]
+
+        async def inject_mixed_responses():
+            while len(issuer._issued) < 3:
+                await asyncio.sleep(0.005)
+            from inference_endpoint.core.types import ErrorData
+
+            # First query: success
+            issuer.inject_response(
+                QueryResult(id=issuer._issued[0].id, response_output="answer1")
+            )
+            # Second query: error
+            issuer.inject_response(
+                QueryResult(
+                    id=issuer._issued[1].id,
+                    error=ErrorData(error_type="timeout", error_message="timed out"),
+                )
+            )
+            # Third query: success
+            issuer.inject_response(
+                QueryResult(id=issuer._issued[2].id, response_output="answer3")
+            )
+
+        asyncio.create_task(inject_mixed_responses())
+        result = await asyncio.wait_for(session.run(phases), timeout=5.0)
+
+        assert len(result.accuracy_results) == 1
+        acc = result.accuracy_results[0]
+        # All 3 samples should be in uuid_to_index, including the failed one
+        assert acc.issued_count == 3
+        assert len(acc.uuid_to_index) == 3
+        # on_sample_complete should have fired for all 3
+        assert len(completed_results) == 3
+
+    @pytest.mark.asyncio
+    async def test_error_event_published_in_accuracy_phase(self):
+        loop = asyncio.get_running_loop()
+        publisher = FakePublisher()
+        issuer = FakeIssuer()
+        issuer._loop = loop
+        issuer._auto_respond = False
+
+        session = BenchmarkSession(issuer, publisher, loop)
+        settings = _make_settings(n_samples=1)
+        phases = [
+            PhaseConfig("acc", settings, FakeDataset(1), PhaseType.ACCURACY),
+        ]
+
+        async def inject_error():
+            while not issuer._issued:
+                await asyncio.sleep(0.005)
+            from inference_endpoint.core.types import ErrorData
+
+            issuer.inject_response(
+                QueryResult(
+                    id=issuer._issued[0].id,
+                    error=ErrorData(error_type="server_error", error_message="500"),
+                )
+            )
+
+        asyncio.create_task(inject_error())
+        await asyncio.wait_for(session.run(phases), timeout=5.0)
+
+        from inference_endpoint.core.record import ErrorEventType
+
+        error_events = [
+            e for e in publisher.events if isinstance(e.event_type, ErrorEventType)
+        ]
+        assert len(error_events) == 1
+
+
+@pytest.mark.unit
+class TestBenchmarkSessionMultiPhaseSatPerfSequence:
+    """Multi-perf + saturation sequence (sat -> perf -> sat -> perf)."""
+
+    @pytest.mark.asyncio
+    async def test_sat_perf_sat_perf(self):
+        loop = asyncio.get_running_loop()
+        issuer = FakeIssuer()
+        issuer._loop = loop
+        publisher = FakePublisher()
+
+        session = BenchmarkSession(issuer, publisher, loop)
+        phases = [
+            PhaseConfig(
+                "warmup1",
+                _make_settings(n_samples=2),
+                FakeDataset(2),
+                PhaseType.SATURATION,
+            ),
+            PhaseConfig(
+                "perf1",
+                _make_settings(n_samples=4),
+                FakeDataset(4),
+                PhaseType.PERFORMANCE,
+            ),
+            PhaseConfig(
+                "warmup2",
+                _make_settings(n_samples=3),
+                FakeDataset(3),
+                PhaseType.SATURATION,
+            ),
+            PhaseConfig(
+                "perf2",
+                _make_settings(n_samples=6),
+                FakeDataset(6),
+                PhaseType.PERFORMANCE,
+            ),
+        ]
+        result = await asyncio.wait_for(session.run(phases), timeout=10.0)
+
+        # Both perf phases should produce results
+        assert len(result.perf_results) == 2
+        assert result.perf_results[0].name == "perf1"
+        assert result.perf_results[0].issued_count == 4
+        assert result.perf_results[1].name == "perf2"
+        assert result.perf_results[1].issued_count == 6
+
+        # Saturation phases produce no results
+        assert len(result.phase_results) == 2
+
+        # Should have start/stop tracking for each perf phase
+        start_track = publisher.events_of_type(
+            SessionEventType.START_PERFORMANCE_TRACKING
+        )
+        stop_track = publisher.events_of_type(
+            SessionEventType.STOP_PERFORMANCE_TRACKING
+        )
+        assert len(start_track) == 2
+        assert len(stop_track) == 2
+
+
+@pytest.mark.unit
+class TestBenchmarkSessionStaleStreamChunk:
+    """Stale StreamChunk from previous phase is ignored."""
+
+    @pytest.mark.asyncio
+    async def test_stale_stream_chunk_ignored(self):
+        """StreamChunk from saturation phase should not affect perf phase counts."""
+        loop = asyncio.get_running_loop()
+        publisher = FakePublisher()
+
+        issuer = FakeIssuer()
+        issuer._loop = loop
+        issuer._auto_respond = False
+
+        completed: list[str] = []
+
+        def on_complete(result: QueryResult | StreamChunk) -> None:
+            completed.append(result.id)
+
+        session = BenchmarkSession(
+            issuer, publisher, loop, on_sample_complete=on_complete
+        )
+
+        # Saturation with slow responses, perf with concurrency
+        sat_settings = _make_settings(n_samples=2)
+        perf_settings = _make_settings(
+            load_pattern=LoadPattern(
+                type=LoadPatternType.CONCURRENCY, target_concurrency=1
+            ),
+            n_samples=2,
+        )
+
+        phases = [
+            PhaseConfig("sat", sat_settings, FakeDataset(2), PhaseType.SATURATION),
+            PhaseConfig("perf", perf_settings, FakeDataset(2), PhaseType.PERFORMANCE),
+        ]
+
+        async def inject_responses():
+            # Wait for saturation queries
+            while len(issuer._issued) < 2:
+                await asyncio.sleep(0.005)
+            sat_ids = [q.id for q in issuer._issued[:2]]
+
+            # Wait for perf phase queries to start
+            while len(issuer._issued) < 3:
+                await asyncio.sleep(0.005)
+
+            # Inject stale StreamChunk from saturation phase into perf phase
+            issuer.inject_response(StreamChunk(id=sat_ids[0], is_complete=True))
+            issuer.inject_response(StreamChunk(id=sat_ids[1], is_complete=True))
+
+            # Now complete the perf queries
+            perf_queries = issuer._issued[2:]
+            for q in perf_queries:
+                issuer.inject_response(QueryResult(id=q.id, response_output="ok"))
+            # Wait for second perf query if not yet issued
+            while len(issuer._issued) < 4:
+                await asyncio.sleep(0.005)
+                for q in issuer._issued[2:]:
+                    if q.id not in list(completed):
+                        issuer.inject_response(
+                            QueryResult(id=q.id, response_output="ok")
+                        )
+
+        asyncio.create_task(inject_responses())
+        result = await asyncio.wait_for(session.run(phases), timeout=5.0)
+
+        # Perf phase should have exactly 2 issued samples
+        assert len(result.perf_results) == 1
+        assert result.perf_results[0].issued_count == 2
+        # on_sample_complete should only be called for perf-phase queries
+        # (stale sat queries are not in perf's uuid_to_index)
+        for cid in completed:
+            assert cid in result.perf_results[0].uuid_to_index
+
+
+@pytest.mark.unit
 class TestSessionResult:
     def test_perf_results_filter(self):
         results = [

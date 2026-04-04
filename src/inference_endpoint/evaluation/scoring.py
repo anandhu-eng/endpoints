@@ -36,6 +36,13 @@ try:
 except ImportError:
     websocket = None
 
+try:
+    import evaluate as _evaluate
+    import nltk as _nltk
+except ImportError:
+    _evaluate = None
+    _nltk = None
+
 from ..core.record import EventRecord, EventType, SampleEventType
 from ..dataset_manager.dataset import Dataset
 from ..dataset_manager.predefined.shopify_product_catalogue import ProductMetadata
@@ -100,10 +107,6 @@ class Scorer(ABC):
         self.dataset = dataset
         self.report_dir = Path(report_dir)
         self.extractor = extractor
-        # If the dataset was transformed with a preset, we still treat it as the original
-        # dataset name for the purposes of scoring
-        if "::" in dataset_name:
-            dataset_name = dataset_name.split("::")[0]
         self.dataset_name = dataset_name
 
         self.ground_truth_column = (
@@ -234,27 +237,13 @@ class RougeScorer(Scorer, scorer_id="rouge"):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        try:
-            import importlib.util as _importlib_util
-
-            if (
-                _importlib_util.find_spec("evaluate") is None
-                or _importlib_util.find_spec("nltk") is None
-                or _importlib_util.find_spec("rouge_score") is None
-            ):
-                raise ImportError
-
-            import evaluate
-            import nltk
-
-            self.metric = evaluate.load("rouge")
-            self.nltk = nltk
-
-        except ImportError:
+        if _evaluate is None or _nltk is None:
             raise ImportError(
                 "nltk, evaluate, and rouge_score are required for ROUGE scoring. "
                 "Install with: pip install nltk evaluate rouge_score"
-            ) from None
+            )
+        self.metric = _evaluate.load("rouge")
+        self.nltk = _nltk
 
     def postprocess_text(self, texts):
         texts = [text.strip() for text in texts]

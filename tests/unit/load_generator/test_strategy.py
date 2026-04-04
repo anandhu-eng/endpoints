@@ -476,6 +476,236 @@ class TestEdgeCases:
 
 
 # ---------------------------------------------------------------------------
+# Executor mode exceptions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestTimedIssueStrategyExecutorExceptions:
+    @pytest.mark.asyncio
+    async def test_executor_issue_raises(self):
+        """If issue() raises inside run_in_executor path, exception propagates."""
+        loop = asyncio.get_running_loop()
+        order = WithoutReplacementSampleOrder(
+            n_samples_in_dataset=10, rng=random.Random(42)
+        )
+        strategy = TimedIssueStrategy(
+            _constant_delay(1_000), order, loop, use_executor=True
+        )
+
+        call_count = 0
+
+        class FailingIssuer:
+            issued_count = 0
+
+            def issue(self, idx: int) -> str | None:
+                nonlocal call_count
+                call_count += 1
+                self.issued_count += 1
+                if call_count == 3:
+                    raise ValueError("executor callback failed")
+                return f"q{call_count}"
+
+        with pytest.raises(ValueError, match="executor callback failed"):
+            await asyncio.wait_for(strategy.execute(FailingIssuer()), timeout=5.0)
+
+    @pytest.mark.asyncio
+    async def test_executor_delay_fn_raises(self):
+        """If delay_fn raises inside executor path, exception propagates."""
+        loop = asyncio.get_running_loop()
+        order = WithoutReplacementSampleOrder(
+            n_samples_in_dataset=10, rng=random.Random(42)
+        )
+        call_count = 0
+
+        def bad_delay():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 3:
+                raise RuntimeError("delay computation failed")
+            return 1_000
+
+        strategy = TimedIssueStrategy(bad_delay, order, loop, use_executor=True)
+        issuer = MockPhaseIssuer(max_issues=100)
+
+        with pytest.raises(RuntimeError, match="delay computation failed"):
+            await asyncio.wait_for(strategy.execute(issuer), timeout=5.0)
+
+
+# ---------------------------------------------------------------------------
+# Concurrent on_query_complete calls
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestConcurrencyStrategyConcurrentCompletions:
+    @pytest.mark.asyncio
+    async def test_multiple_completions_simultaneously(self):
+        """Multiple on_query_complete calls arriving at the same time."""
+        order = WithoutReplacementSampleOrder(
+            n_samples_in_dataset=20, rng=random.Random(42)
+        )
+        strategy = ConcurrencyStrategy(target_concurrency=5, sample_order=order)
+        issuer = MockPhaseIssuer(max_issues=20)
+
+        task = asyncio.create_task(strategy.execute(issuer))
+
+        # Let strategy issue initial batch of 5
+        await asyncio.sleep(0.02)
+        assert issuer.issued_count == 5
+
+        # Release all 5 at once
+        for i in range(1, 6):
+            strategy.on_query_complete(f"q{i}")
+        await asyncio.sleep(0.02)
+        assert issuer.issued_count == 10
+
+        # Release next batch all at once
+        for i in range(6, 11):
+            strategy.on_query_complete(f"q{i}")
+        await asyncio.sleep(0.02)
+        assert issuer.issued_count == 15
+
+        # Release rest
+        for i in range(11, 21):
+            strategy.on_query_complete(f"q{i}")
+        count = await asyncio.wait_for(task, timeout=2.0)
+        assert count == 20
+
+    @pytest.mark.asyncio
+    async def test_completions_interleaved_with_issues(self):
+        """Completions arriving while new issues are being scheduled."""
+        order = WithoutReplacementSampleOrder(
+            n_samples_in_dataset=50, rng=random.Random(42)
+        )
+        strategy = ConcurrencyStrategy(target_concurrency=2, sample_order=order)
+        issuer = MockPhaseIssuer(max_issues=10)
+
+        task = asyncio.create_task(strategy.execute(issuer))
+        await asyncio.sleep(0.01)
+        assert issuer.issued_count == 2
+
+        # Alternate: complete one, let it issue one more
+        for i in range(1, 11):
+            strategy.on_query_complete(f"q{i}")
+            await asyncio.sleep(0.005)
+
+        count = await asyncio.wait_for(task, timeout=2.0)
+        assert count == 10
+
+
+# ---------------------------------------------------------------------------
+# Near-zero delay (high QPS poisson)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestTimedIssueStrategyNearZeroDelay:
+    @pytest.mark.asyncio
+    async def test_very_high_qps(self):
+        """Poisson with extremely high QPS should still issue all samples."""
+        loop = asyncio.get_running_loop()
+        order = WithoutReplacementSampleOrder(
+            n_samples_in_dataset=50, rng=random.Random(42)
+        )
+        # 1ns delay -- essentially zero
+        strategy = TimedIssueStrategy(
+            _constant_delay(1), order, loop, use_executor=False
+        )
+        issuer = MockPhaseIssuer(max_issues=50)
+        count = await asyncio.wait_for(strategy.execute(issuer), timeout=5.0)
+        assert count == 50
+
+    @pytest.mark.asyncio
+    async def test_very_high_qps_executor(self):
+        """Near-zero delay in executor mode."""
+        loop = asyncio.get_running_loop()
+        order = WithoutReplacementSampleOrder(
+            n_samples_in_dataset=50, rng=random.Random(42)
+        )
+        strategy = TimedIssueStrategy(
+            _constant_delay(1), order, loop, use_executor=True
+        )
+        issuer = MockPhaseIssuer(max_issues=50)
+        count = await asyncio.wait_for(strategy.execute(issuer), timeout=5.0)
+        assert count == 50
+
+    @pytest.mark.asyncio
+    async def test_poisson_high_qps_statistical(self):
+        """Real poisson distribution at 1M QPS should complete quickly."""
+        loop = asyncio.get_running_loop()
+        order = WithoutReplacementSampleOrder(
+            n_samples_in_dataset=100, rng=random.Random(42)
+        )
+        delay_fn = poisson_delay_fn(1_000_000.0, random.Random(42))
+        strategy = TimedIssueStrategy(delay_fn, order, loop, use_executor=False)
+        issuer = MockPhaseIssuer(max_issues=100)
+        count = await asyncio.wait_for(strategy.execute(issuer), timeout=5.0)
+        assert count == 100
+
+
+# ---------------------------------------------------------------------------
+# Large-scale burst
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestBurstStrategyLargeScale:
+    @pytest.mark.asyncio
+    async def test_burst_1000_samples(self):
+        """BurstStrategy should handle 1000+ samples without issues."""
+        loop = asyncio.get_running_loop()
+        order = WithoutReplacementSampleOrder(
+            n_samples_in_dataset=200, rng=random.Random(42)
+        )
+        strategy = BurstStrategy(order, loop)
+        issuer = MockPhaseIssuer(max_issues=1000)
+        count = await asyncio.wait_for(strategy.execute(issuer), timeout=10.0)
+        assert count == 1000
+
+    @pytest.mark.asyncio
+    async def test_burst_5000_samples(self):
+        """BurstStrategy at 5000 samples -- verify count and no event loop starvation."""
+        loop = asyncio.get_running_loop()
+        order = WithoutReplacementSampleOrder(
+            n_samples_in_dataset=500, rng=random.Random(42)
+        )
+        strategy = BurstStrategy(order, loop)
+
+        wakeups = 0
+        stop = asyncio.Event()
+
+        async def observer():
+            nonlocal wakeups
+            while not stop.is_set():
+                await asyncio.sleep(0)
+                wakeups += 1
+
+        obs_task = asyncio.create_task(observer())
+        issuer = MockPhaseIssuer(max_issues=5000)
+        count = await asyncio.wait_for(strategy.execute(issuer), timeout=10.0)
+        stop.set()
+        await obs_task
+
+        assert count == 5000
+        assert wakeups > 10, f"Event loop starved: observer only ran {wakeups} times"
+
+    @pytest.mark.asyncio
+    async def test_burst_indices_wrap_around(self):
+        """With dataset_size < issue_count, indices should wrap around."""
+        loop = asyncio.get_running_loop()
+        order = WithoutReplacementSampleOrder(
+            n_samples_in_dataset=3, rng=random.Random(42)
+        )
+        strategy = BurstStrategy(order, loop)
+        issuer = MockPhaseIssuer(max_issues=10)
+        count = await asyncio.wait_for(strategy.execute(issuer), timeout=5.0)
+        assert count == 10
+        # All indices should be 0, 1, or 2
+        assert all(0 <= idx <= 2 for idx in issuer.issued_indices)
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

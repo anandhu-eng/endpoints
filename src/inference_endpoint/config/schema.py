@@ -734,7 +734,7 @@ class BenchmarkConfig(WithUpdatesMixin, BaseModel):
         _common = {
             "model_params": ModelParams(name="<MODEL_NAME>"),
             "datasets": [Dataset(path="<DATASET_PATH>")],
-            "endpoint_config": EndpointConfig(endpoints=["<ENDPOINT_URL>"]),
+            "endpoint_config": EndpointConfig(endpoints=["http://localhost:8000"]),
         }
         if test_type == TestType.OFFLINE:
             return OfflineBenchmarkConfig(**_common)
