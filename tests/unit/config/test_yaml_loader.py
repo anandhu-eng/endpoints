@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 from inference_endpoint.config.schema import BenchmarkConfig, LoadPatternType
 from inference_endpoint.config.schema import TestType as BenchmarkTestType
+from inference_endpoint.exceptions import CLIError
 from pydantic import ValidationError
 
 
@@ -41,7 +42,7 @@ model_params:
 datasets:
   - name: "test"
     type: "performance"
-    path: "test.pkl"
+    path: "test.jsonl"
 
 settings:
   runtime:
@@ -49,10 +50,12 @@ settings:
   load_pattern:
     type: "max_throughput"
   client:
-    workers: 4
+    num_workers: 4
     worker_initialization_timeout: 120
-    zmq_recv_buffer_bytes: 16777216
-    zmq_send_buffer_bytes: 8388608
+    transport:
+      type: zmq
+      recv_buffer_size: 16777216
+      send_buffer_size: 8388608
 
 metrics:
   collect:
@@ -70,8 +73,8 @@ endpoint_config:
         assert config.type == BenchmarkTestType.OFFLINE
         assert len(config.datasets) == 1
         assert config.settings.client.worker_initialization_timeout == 120.0
-        assert config.settings.client.zmq_recv_buffer_bytes == 16777216
-        assert config.settings.client.zmq_send_buffer_bytes == 8388608
+        assert config.settings.client.transport.recv_buffer_size == 16777216
+        assert config.settings.client.transport.send_buffer_size == 8388608
 
     def test_load_nonexistent_file(self):
         """Test error when file doesn't exist."""
@@ -105,7 +108,7 @@ endpoint_config:
 datasets:
   - name: "test"
     type: "performance"
-    path: "test.pkl"
+    path: "test.jsonl"
 """
         config_file = tmp_path / "env_config.yaml"
         config_file.write_text(config_content)
@@ -130,7 +133,7 @@ endpoint_config:
 datasets:
   - name: "test"
     type: "performance"
-    path: "test.pkl"
+    path: "test.jsonl"
 """
         config_file = tmp_path / "bare_env.yaml"
         config_file.write_text(config_content)
@@ -177,7 +180,7 @@ class TestDefaultConfigs:
         assert isinstance(config, BenchmarkConfig)
         assert config.settings.load_pattern.type == LoadPatternType.MAX_THROUGHPUT
         assert config.settings.runtime.min_duration_ms == 600000
-        assert config.settings.client.workers == -1
+        assert config.settings.client.num_workers >= 1  # auto-resolved from -1
 
     def test_create_default_online_config(self):
         config = BenchmarkConfig.create_default_config(BenchmarkTestType.ONLINE)
@@ -187,11 +190,11 @@ class TestDefaultConfigs:
         assert config.settings.runtime.min_duration_ms == 600000
 
     def test_create_default_eval_not_implemented(self):
-        with pytest.raises(NotImplementedError, match="EVAL"):
+        with pytest.raises(CLIError, match="EVAL"):
             BenchmarkConfig.create_default_config(BenchmarkTestType.EVAL)
 
     def test_create_default_submission_not_implemented(self):
-        with pytest.raises(NotImplementedError, match="SUBMISSION"):
+        with pytest.raises(CLIError, match="SUBMISSION"):
             BenchmarkConfig.create_default_config(BenchmarkTestType.SUBMISSION)
 
 
@@ -208,19 +211,21 @@ class TestSerialization:
         loaded = BenchmarkConfig.from_yaml_file(yaml_file)
         assert loaded.name == original.name
         assert loaded.type == original.type
-        assert loaded.settings.client.workers == original.settings.client.workers
+        assert (
+            loaded.settings.client.num_workers == original.settings.client.num_workers
+        )
         assert loaded.settings.load_pattern.type == original.settings.load_pattern.type
         assert (
             loaded.settings.client.worker_initialization_timeout
             == original.settings.client.worker_initialization_timeout
         )
         assert (
-            loaded.settings.client.zmq_recv_buffer_bytes
-            == original.settings.client.zmq_recv_buffer_bytes
+            loaded.settings.client.transport.recv_buffer_size
+            == original.settings.client.transport.recv_buffer_size
         )
         assert (
-            loaded.settings.client.zmq_send_buffer_bytes
-            == original.settings.client.zmq_send_buffer_bytes
+            loaded.settings.client.transport.send_buffer_size
+            == original.settings.client.transport.send_buffer_size
         )
 
     def test_to_yaml_file_creates_directory(self, tmp_path):

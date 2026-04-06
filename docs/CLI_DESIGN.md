@@ -102,7 +102,7 @@ The first segment is the file path, optionally prefixed with `perf:` or `acc:` t
 
 ```bash
 # Simple
---dataset data.pkl
+--dataset data.jsonl
 
 # Accuracy dataset
 --dataset acc:eval.jsonl
@@ -111,15 +111,15 @@ The first segment is the file path, optionally prefixed with `perf:` or `acc:` t
 --dataset data.csv,samples=500,parser.prompt=article
 
 # With accuracy config
---dataset acc:eval.pkl,accuracy_config.eval_method=pass_at_1,accuracy_config.ground_truth=answer
+--dataset acc:eval.jsonl,accuracy_config.eval_method=pass_at_1,accuracy_config.ground_truth=answer
 
 # Multiple datasets
---dataset perf:train.pkl --dataset acc:eval.pkl,accuracy_config.eval_method=pass_at_1 --mode both
+--dataset perf:train.jsonl --dataset acc:eval.jsonl,accuracy_config.eval_method=pass_at_1 --mode both
 ```
 
 Parser remaps use `parser.TARGET=SOURCE` — "rename my dataset's SOURCE column to TARGET". Valid targets are derived from `MakeAdapterCompatible` (`prompt`, `system`). Invalid targets are rejected at parse time. Invalid source columns are rejected at dataset load time.
 
-Pydantic validates all fields: `extra="forbid"` on `Dataset` and `AccuracyConfig` catches typos like `--dataset data.pkl,samles=500`. Format is auto-detected from file extension.
+Pydantic validates all fields: `extra="forbid"` on `Dataset` and `AccuracyConfig` catches typos like `--dataset data.jsonl,samles=500`. Format is auto-detected from file extension.
 
 The only YAML-only features are `submission_ref` and `benchmark_mode` (for official submissions).
 
@@ -133,7 +133,7 @@ Validation is layered, executing in order:
  3. Sub-model validators:
     ├── RuntimeConfig._validate_durations    → max >= min duration
     ├── LoadPattern._validate_completeness   → poisson needs qps, concurrency needs target
-    └── ClientSettings._workers_not_zero     → workers != 0
+    └── HTTPClientConfig._workers_not_zero   → num_workers != 0
  4. BenchmarkConfig._resolve_and_validate:
     ├── resolve defaults (name, streaming, model name from submission_ref)
     ├── load pattern type vs test type (offline→max_throughput, online→poisson/concurrency)
@@ -156,7 +156,7 @@ $ inference-endpoint benchmark offline
 
 $ inference-endpoint benchmark offline --endpoints x --model M --dataset D --workers abc
 ╭── Error ─────────────────────────────────────────────────────────────────────╮
-│   settings.client.workers: Input should be a valid integer, unable to parse  │
+│   settings.client.num_workers: Input should be a valid integer, unable to    │
 │ string as an integer                                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -182,7 +182,7 @@ NotImplementedError     1           Unimplemented command (eval)
 Annotate the schema field — zero CLI code changes:
 
 ```python
-class ClientSettings(BaseModel):
+class HTTPClientConfig(WithUpdatesMixin, BaseModel):
     buffer_size: Annotated[
         int,
         cyclopts.Parameter(alias="--buffer-size", help="Socket buffer size"),
@@ -202,5 +202,5 @@ class ClientSettings(BaseModel):
 `BenchmarkConfig` is frozen. Use `with_updates()` to produce new instances with re-validation:
 
 ```python
-config = config.with_updates(timeout=300, datasets=["new_data.pkl"])
+config = config.with_updates(timeout=300, datasets=["new_data.jsonl"])
 ```

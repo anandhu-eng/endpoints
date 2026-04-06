@@ -20,7 +20,6 @@ from urllib.parse import urljoin
 
 import pytest
 from inference_endpoint import metrics
-from inference_endpoint.async_utils.transport.zmq.context import ManagedZMQContext
 from inference_endpoint.config.runtime_settings import RuntimeSettings
 from inference_endpoint.config.schema import LoadPattern, LoadPatternType
 from inference_endpoint.core.types import QueryResult
@@ -42,12 +41,16 @@ from inference_endpoint.load_generator import (
 
 
 class DeepSeekR1SampleIssuer(HttpClientSampleIssuer):
-    def __init__(self, tmp_path: Path, url: str, zmq_context: ManagedZMQContext):
+    def __init__(self, tmp_path: Path, url: str):
         self.http_config = HTTPClientConfig(
             endpoint_urls=[urljoin(url, "/v1/chat/completions")],
             warmup_connections=0,
         )
-        super().__init__(HTTPEndpointClient(self.http_config, zmq_context=zmq_context))
+        super().__init__(
+            HTTPEndpointClient(
+                self.http_config,
+            )
+        )
 
 
 async def run_benchmark(server_url, dataloader, tmp_path, rt_settings):
@@ -67,33 +70,31 @@ async def run_benchmark(server_url, dataloader, tmp_path, rt_settings):
     )
     logging.info(f"Number of samples to issue: {scheduler.total_samples_to_issue}")
 
-    # Scope ZMQ context so transport and sockets are cleaned up when the block exits.
-    with ManagedZMQContext.scoped() as zmq_ctx:
-        sample_issuer = None
-        try:
-            # Step 3. Create the sample issuer.
-            sample_issuer = DeepSeekR1SampleIssuer(tmp_path, server_url, zmq_ctx)
+    sample_issuer = None
+    try:
+        # Step 3. Create the sample issuer.
+        sample_issuer = DeepSeekR1SampleIssuer(tmp_path, server_url)
 
-            # Step 4. Create the benchmark session.
-            sess = BenchmarkSession.start(
-                rt_settings,
-                dataloader,
-                sample_issuer,
-                scheduler,
-                name="pytest_run_benchmark",
-                max_shutdown_timeout_s=3 * 60,
-            )
+        # Step 4. Create the benchmark session.
+        sess = BenchmarkSession.start(
+            rt_settings,
+            dataloader,
+            sample_issuer,
+            scheduler,
+            name="pytest_run_benchmark",
+            max_shutdown_timeout_s=3 * 60,
+        )
 
-            # Step 5. Wait for the test to end.
-            logging.info("Waiting for the test to end...")
-            sess.wait_for_test_end()
-            # Step 6. Return the sample UUID map and the server responses.
-            return sess.sample_uuid_map, server_responses
-        finally:
-            # Step 7. Shutdown the sample issuer and the HTTP client.
-            if sample_issuer is not None:
-                sample_issuer.shutdown()
-                sample_issuer.http_client.shutdown()
+        # Step 5. Wait for the test to end.
+        logging.info("Waiting for the test to end...")
+        sess.wait_for_test_end()
+        # Step 6. Return the sample UUID map and the server responses.
+        return sess.sample_uuid_map, server_responses
+    finally:
+        # Step 7. Shutdown the sample issuer and the HTTP client.
+        if sample_issuer is not None:
+            sample_issuer.shutdown()
+            sample_issuer.http_client.shutdown()
 
 
 """
@@ -161,13 +162,13 @@ async def _run_load_generator_full_run_url(
 @pytest.mark.asyncio
 async def test_load_generator_full_run_mock_http_oracle_server(
     mock_http_oracle_server,
-    ds_pickle_dataset_path,
+    ds_dataset_path,
     tmp_path,
     clean_sample_event_hooks,
     hf_model_name,
 ):
     dummy_dataloader = Dataset.load_from_file(
-        ds_pickle_dataset_path,
+        ds_dataset_path,
         transforms=[
             ColumnRemap({"text_input": "prompt", "ref_output": "output"}),
             AddStaticColumns({"model": hf_model_name}),
@@ -230,14 +231,14 @@ async def test_load_generator_full_run_mock_http_oracle_server(
 @pytest.mark.timeout(0)
 async def test_load_generator_full_run_vllm_docker_server(
     vllm_docker_server,
-    ds_pickle_dataset_path,
+    ds_dataset_path,
     tmp_path,
     clean_sample_event_hooks,
     hf_model_name,
 ):
     await _run_load_generator_full_run_url(
         vllm_docker_server.url,
-        ds_pickle_dataset_path,
+        ds_dataset_path,
         tmp_path,
         clean_sample_event_hooks,
         hf_model_name,
@@ -250,14 +251,14 @@ async def test_load_generator_full_run_vllm_docker_server(
 @pytest.mark.timeout(0)
 async def test_load_generator_full_run_sglang_docker_server(
     sglang_docker_server,
-    ds_pickle_dataset_path,
+    ds_dataset_path,
     tmp_path,
     clean_sample_event_hooks,
     hf_model_name,
 ):
     await _run_load_generator_full_run_url(
         sglang_docker_server.url,
-        ds_pickle_dataset_path,
+        ds_dataset_path,
         tmp_path,
         clean_sample_event_hooks,
         hf_model_name,
@@ -270,14 +271,14 @@ async def test_load_generator_full_run_sglang_docker_server(
 @pytest.mark.timeout(0)
 async def test_load_generator_full_run_trtllm_docker_server(
     trtllm_docker_server,
-    ds_pickle_dataset_path,
+    ds_dataset_path,
     tmp_path,
     clean_sample_event_hooks,
     hf_model_name,
 ):
     await _run_load_generator_full_run_url(
         trtllm_docker_server.url,
-        ds_pickle_dataset_path,
+        ds_dataset_path,
         tmp_path,
         clean_sample_event_hooks,
         hf_model_name,

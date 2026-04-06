@@ -12,8 +12,7 @@ model_params:
 datasets:
   - name: "perf-test"
     type: "performance"
-    path: "tests/datasets/dummy_1k.pkl"
-    format: "pkl"
+    path: "tests/datasets/dummy_1k.jsonl"
     samples: 1000
     parser:
       prompt: "text_input"
@@ -29,7 +28,7 @@ settings:
     type: "max_throughput"
 
   client:
-    workers: 4
+    num_workers: 4
 
 metrics:
   collect:

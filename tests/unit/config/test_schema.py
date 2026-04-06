@@ -30,6 +30,7 @@ from inference_endpoint.config.schema import (
     SubmissionReference,
     TestType,
 )
+from inference_endpoint.exceptions import CLIError
 
 
 class TestOSLDistribution:
@@ -89,7 +90,7 @@ class TestAPIType:
 class TestDataset:
     @pytest.mark.unit
     def test_performance_dataset(self):
-        ds = Dataset(name="perf", type=DatasetType.PERFORMANCE, path="data.pkl")
+        ds = Dataset(name="perf", type=DatasetType.PERFORMANCE, path="data.jsonl")
         assert ds.eval_method is None
 
     @pytest.mark.unit
@@ -97,14 +98,14 @@ class TestDataset:
         ds = Dataset(
             name="gpqa",
             type=DatasetType.ACCURACY,
-            path="gpqa.pkl",
+            path="gpqa.jsonl",
             eval_method=EvalMethod.EXACT_MATCH,
         )
         assert ds.eval_method == EvalMethod.EXACT_MATCH
 
     @pytest.mark.unit
     def test_auto_derive_name(self):
-        ds = Dataset(path="datasets/my_data.pkl")
+        ds = Dataset(path="datasets/my_data.jsonl")
         assert ds.name == "my_data"
 
 
@@ -129,7 +130,7 @@ class TestBenchmarkConfig:
             type=TestType.OFFLINE,
             model_params={"name": "test"},
             endpoint_config={"endpoints": ["http://localhost:8000"]},
-            datasets=[{"path": "test.pkl"}],
+            datasets=[{"path": "test.jsonl"}],
         )
         assert config.type == TestType.OFFLINE
 
@@ -142,7 +143,7 @@ class TestBenchmarkConfig:
             submission_ref=SubmissionReference(
                 model="llama-2-70b", ruleset="mlperf-inference-v6.0"
             ),
-            datasets=[{"path": "perf.pkl"}],
+            datasets=[{"path": "perf.jsonl"}],
         )
         assert config.model_params.name == "llama-2-70b"
         assert config.submission_ref.ruleset == "mlperf-inference-v6.0"
@@ -155,8 +156,8 @@ class TestBenchmarkConfig:
             model_params={"name": "test"},
             endpoint_config={"endpoints": ["http://localhost:8000"]},
             datasets=[
-                {"name": "gpqa", "type": "accuracy", "path": "gpqa.pkl"},
-                {"name": "aime", "type": "accuracy", "path": "aime.pkl"},
+                {"name": "gpqa", "type": "accuracy", "path": "gpqa.jsonl"},
+                {"name": "aime", "type": "accuracy", "path": "aime.jsonl"},
             ],
         )
         acc = [d for d in config.datasets if d.type == DatasetType.ACCURACY]
@@ -169,7 +170,7 @@ class TestBenchmarkConfig:
                 type=TestType.OFFLINE,
                 model_params={"name": "test"},
                 endpoint_config={"endpoints": ["http://localhost:8000"]},
-                datasets=[{"path": "test.pkl"}, {"path": "test.pkl"}],
+                datasets=[{"path": "test.jsonl"}, {"path": "test.jsonl"}],
             )
 
     @pytest.mark.unit
@@ -229,6 +230,17 @@ class TestBenchmarkConfig:
             )
 
     @pytest.mark.unit
+    def test_max_duration_below_zero_rejected(self):
+        with pytest.raises(ValueError, match="greater than or equal to 0"):
+            BenchmarkConfig(
+                type=TestType.OFFLINE,
+                model_params={"name": "M"},
+                endpoint_config={"endpoints": ["http://x"]},
+                datasets=[{"path": "D"}],
+                settings={"runtime": {"max_duration_ms": -1}},
+            )
+
+    @pytest.mark.unit
     def test_submission_bad_benchmark_mode(self):
         with pytest.raises(ValueError, match="benchmark_mode"):
             BenchmarkConfig(
@@ -281,12 +293,12 @@ class TestBenchmarkConfigMethods:
             model_params={"name": "M"},
             endpoint_config={"endpoints": ["http://x"]},
             datasets=[
-                {"name": "acc", "type": "accuracy", "path": "a.pkl"},
-                {"name": "perf", "type": "performance", "path": "p.pkl"},
+                {"name": "acc", "type": "accuracy", "path": "a.jsonl"},
+                {"name": "perf", "type": "performance", "path": "p.jsonl"},
             ],
         )
         ds = config.get_single_dataset()
-        assert ds.path == "p.pkl"
+        assert ds.path == "p.jsonl"
 
     @pytest.mark.unit
     def test_get_single_dataset_empty(self):
@@ -303,9 +315,9 @@ class TestBenchmarkConfigMethods:
             type=TestType.EVAL,
             model_params={"name": "M"},
             endpoint_config={"endpoints": ["http://x"]},
-            datasets=[{"name": "acc", "type": "accuracy", "path": "a.pkl"}],
+            datasets=[{"name": "acc", "type": "accuracy", "path": "a.jsonl"}],
         )
-        assert config.get_single_dataset().path == "a.pkl"
+        assert config.get_single_dataset().path == "a.jsonl"
 
     @pytest.mark.unit
     def test_create_default_offline(self):
@@ -321,12 +333,12 @@ class TestBenchmarkConfigMethods:
 
     @pytest.mark.unit
     def test_create_default_eval_not_implemented(self):
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(CLIError, match="EVAL config not yet implemented"):
             BenchmarkConfig.create_default_config(TestType.EVAL)
 
     @pytest.mark.unit
     def test_create_default_submission_not_implemented(self):
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(CLIError, match="SUBMISSION config not yet implemented"):
             BenchmarkConfig.create_default_config(TestType.SUBMISSION)
 
     @pytest.mark.unit
@@ -342,6 +354,20 @@ class TestBenchmarkConfigMethods:
         assert out.exists()
         loaded = BenchmarkConfig.from_yaml_file(out)
         assert loaded.model_params.name == "M"
+
+    @pytest.mark.unit
+    def test_max_duration_zero_converts_to_none_in_runtime_settings(self):
+        from inference_endpoint.config.runtime_settings import RuntimeSettings
+
+        config = BenchmarkConfig(
+            type=TestType.OFFLINE,
+            model_params={"name": "M"},
+            endpoint_config={"endpoints": ["http://x"]},
+            datasets=[{"path": "D"}],
+            settings={"runtime": {"max_duration_ms": 0}},
+        )
+        rt = RuntimeSettings.from_config(config, dataloader_num_samples=100)
+        assert rt.max_duration_ms is None
 
     @pytest.mark.unit
     def test_from_yaml_file_not_found(self):

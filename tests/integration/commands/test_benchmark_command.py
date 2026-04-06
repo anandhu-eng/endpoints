@@ -21,7 +21,6 @@ import pytest
 from inference_endpoint.commands.benchmark.execute import run_benchmark
 from inference_endpoint.config.schema import (
     BenchmarkConfig,
-    ClientSettings,
     Dataset,
     DatasetType,
     EndpointConfig,
@@ -34,11 +33,12 @@ from inference_endpoint.config.schema import (
     TestMode,
     TestType,
 )
+from inference_endpoint.endpoint_client.config import HTTPClientConfig
 
 _TEST_SETTINGS = Settings(
     runtime=RuntimeConfig(min_duration_ms=0),
     load_pattern=LoadPattern(type=LoadPatternType.MAX_THROUGHPUT),
-    client=ClientSettings(workers=1, warmup_connections=0),
+    client=HTTPClientConfig(num_workers=1, warmup_connections=0, max_connections=10),
 )
 
 
@@ -58,7 +58,9 @@ def _poisson_settings(target_qps: float, duration_s: int = 2) -> Settings:
     return Settings(
         runtime=RuntimeConfig(min_duration_ms=duration_s * 1000),
         load_pattern=LoadPattern(type=LoadPatternType.POISSON, target_qps=target_qps),
-        client=ClientSettings(workers=1, warmup_connections=0),
+        client=HTTPClientConfig(
+            num_workers=1, warmup_connections=0, max_connections=10
+        ),
     )
 
 
@@ -68,11 +70,11 @@ class TestBenchmarkCommandIntegration:
     @pytest.mark.integration
     @pytest.mark.parametrize("streaming", [StreamingMode.OFF, StreamingMode.ON])
     def test_offline_benchmark(
-        self, mock_http_echo_server, ds_pickle_dataset_path, caplog, streaming
+        self, mock_http_echo_server, ds_dataset_path, caplog, streaming
     ):
         config = _config(
             mock_http_echo_server.url,
-            ds_pickle_dataset_path,
+            ds_dataset_path,
             model_params=ModelParams(name="echo-server", streaming=streaming),
         )
         with caplog.at_level("INFO"):
@@ -86,11 +88,11 @@ class TestBenchmarkCommandIntegration:
     @pytest.mark.integration
     @pytest.mark.parametrize("streaming", [StreamingMode.OFF, StreamingMode.ON])
     def test_online_benchmark(
-        self, mock_http_echo_server, ds_pickle_dataset_path, caplog, streaming
+        self, mock_http_echo_server, ds_dataset_path, caplog, streaming
     ):
         config = _config(
             mock_http_echo_server.url,
-            ds_pickle_dataset_path,
+            ds_dataset_path,
             type=TestType.ONLINE,
             model_params=ModelParams(name="echo-server", streaming=streaming),
             settings=_poisson_settings(target_qps=50),
@@ -105,11 +107,11 @@ class TestBenchmarkCommandIntegration:
 
     @pytest.mark.integration
     def test_results_json_output(
-        self, mock_http_echo_server, ds_pickle_dataset_path, tmp_path
+        self, mock_http_echo_server, ds_dataset_path, tmp_path
     ):
         config = _config(
             mock_http_echo_server.url,
-            ds_pickle_dataset_path,
+            ds_dataset_path,
             report_dir=tmp_path,
         )
         run_benchmark(config, TestMode.PERF)
@@ -122,10 +124,10 @@ class TestBenchmarkCommandIntegration:
         assert results["results"]["successful"] >= 0
 
     @pytest.mark.integration
-    def test_mode_logging(self, mock_http_echo_server, ds_pickle_dataset_path, caplog):
+    def test_mode_logging(self, mock_http_echo_server, ds_dataset_path, caplog):
         config = _config(
             mock_http_echo_server.url,
-            ds_pickle_dataset_path,
+            ds_dataset_path,
             type=TestType.ONLINE,
             settings=_poisson_settings(target_qps=20),
         )
