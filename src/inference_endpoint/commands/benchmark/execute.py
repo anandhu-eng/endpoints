@@ -510,15 +510,6 @@ async def _run_benchmark_async(
     loop.add_signal_handler(signal.SIGINT, session.stop)
     try:
         result = await session.run(phases)
-
-        # Build report from KVStore metrics
-        try:
-            kv_reader = _setup_kv_reader(metrics_dir, ctx.enable_streaming)
-            report = Report.from_kv_reader(kv_reader)
-            kv_reader.close()
-        except Exception as e:
-            logger.warning(f"Failed to build report from metrics: {e}")
-
     except Exception as e:
         raise ExecutionError(f"Benchmark execution failed: {e}") from e
     finally:
@@ -531,6 +522,16 @@ async def _run_benchmark_async(
             logger.warning(f"Client cleanup error: {e}")
         publisher.close()
         await asyncio.to_thread(launcher.wait_for_exit, 10.0)
+
+        # Build report AFTER aggregator has exited — ensures all metrics
+        # (TTFT, TPOT, OSL, latency) are fully written to KVStore.
+        try:
+            kv_reader = _setup_kv_reader(metrics_dir, ctx.enable_streaming)
+            report = Report.from_kv_reader(kv_reader)
+            kv_reader.close()
+        except Exception as e:
+            logger.warning(f"Failed to build report from metrics: {e}")
+
         zmq_ctx.cleanup()
         pbar.close()
 
@@ -567,16 +568,37 @@ def _write_scoring_artifacts(
     logger.debug(f"Wrote {map_path}")
 
     # Copy events.jsonl from tmpfs to report_dir
-    src_events = tmpfs_dir / "events" / "events.jsonl"
-    if src_events.exists():
-        dst_events = ctx.report_dir / "events.jsonl"
-        shutil.copy2(src_events, dst_events)
-        logger.debug(f"Copied {src_events} -> {dst_events}")
-    else:
-        logger.warning(f"events.jsonl not found at {src_events}")
+    _salvage_tmpfs(ctx.report_dir, tmpfs_dir)
 
     # Clean up tmpfs
     shutil.rmtree(tmpfs_dir, ignore_errors=True)
+
+
+def _salvage_tmpfs(report_dir: Path, tmpfs_dir: Path) -> None:
+    """Copy all salvageable artifacts from tmpfs to report_dir.
+
+    Called during normal finalization and on interrupt/crash to preserve logs.
+    Safe to call multiple times (skips if already copied or tmpfs is gone).
+    """
+    if not tmpfs_dir.exists():
+        return
+
+    # events.jsonl (from EventLoggerService)
+    src_events = tmpfs_dir / "events" / "events.jsonl"
+    if src_events.exists():
+        dst_events = report_dir / "events.jsonl"
+        shutil.copy2(src_events, dst_events)
+        logger.debug(f"Copied {src_events} -> {dst_events}")
+
+    # metrics mmap files (from MetricsAggregator KVStore)
+    src_metrics = tmpfs_dir / "metrics"
+    if src_metrics.exists():
+        dst_metrics = report_dir / "metrics"
+        dst_metrics.mkdir(parents=True, exist_ok=True)
+        for f in src_metrics.iterdir():
+            if f.is_file():
+                shutil.copy2(f, dst_metrics / f.name)
+        logger.debug(f"Copied metrics from {src_metrics} -> {dst_metrics}")
 
 
 def finalize_benchmark(ctx: BenchmarkContext, bench: BenchmarkResult) -> None:
@@ -691,6 +713,8 @@ def run_benchmark(config: BenchmarkConfig, test_mode: TestMode) -> None:
     except KeyboardInterrupt:
         logger.warning("Benchmark interrupted by user")
     finally:
-        # Clean up tmpfs even on crash/interrupt
         if bench and bench.tmpfs_dir.exists():
+            # Salvage logs from tmpfs before cleanup (no-op if finalize already copied)
+            _salvage_tmpfs(ctx.report_dir, bench.tmpfs_dir)
             shutil.rmtree(bench.tmpfs_dir, ignore_errors=True)
+            logger.info(f"Partial results saved to {ctx.report_dir}")
