@@ -393,8 +393,8 @@ class TestBenchmarkSession:
         """Streaming: StreamChunks publish timing events, QueryResult handles completion.
 
         The worker sends StreamChunk(first) → StreamChunk(delta) → QueryResult.
-        StreamChunks never have is_complete=True. Only the QueryResult decrements
-        inflight and releases the concurrency semaphore.
+        Only the QueryResult decrements inflight and releases the concurrency
+        semaphore. StreamChunks only publish timing events.
         """
         loop = asyncio.get_running_loop()
         publisher = FakePublisher()
@@ -865,48 +865,6 @@ class TestBenchmarkSessionStaleStreamChunk:
         # (stale sat queries are not in perf's uuid_to_index)
         for cid in completed:
             assert cid in result.perf_results[0].uuid_to_index
-
-
-@pytest.mark.unit
-class TestStreamChunkIsCompleteRejected:
-    """StreamChunk(is_complete=True) violates the transport contract and is logged as error."""
-
-    @pytest.mark.asyncio
-    async def test_is_complete_true_rejected(self, caplog):
-        """StreamChunk(is_complete=True) should be logged as an error and ignored."""
-        loop = asyncio.get_running_loop()
-        publisher = FakePublisher()
-        issuer = FakeIssuer()
-        issuer._loop = loop
-        issuer._auto_respond = False
-
-        session = BenchmarkSession(issuer, publisher, loop)
-        settings = _make_settings(n_samples=1)
-        phases = [PhaseConfig("perf", settings, FakeDataset(1))]
-
-        async def inject():
-            while not issuer._issued:
-                await asyncio.sleep(0.005)
-            q = issuer._issued[0]
-            # Inject an invalid StreamChunk(is_complete=True) — should be rejected
-            issuer.inject_response(StreamChunk(id=q.id, is_complete=True))
-            # Then the real completion via QueryResult
-            issuer.inject_response(QueryResult(id=q.id, response_output="ok"))
-
-        asyncio.create_task(inject())
-        with caplog.at_level("ERROR"):
-            result = await asyncio.wait_for(session.run(phases), timeout=5.0)
-
-        assert result.perf_results[0].issued_count == 1
-        assert "violates the transport contract" in caplog.text
-        # No RECV_FIRST/RECV_NON_FIRST event for the rejected StreamChunk
-        recv_events = [
-            e
-            for e in publisher.events
-            if e.event_type
-            in (SampleEventType.RECV_FIRST, SampleEventType.RECV_NON_FIRST)
-        ]
-        assert len(recv_events) == 0
 
 
 @pytest.mark.unit

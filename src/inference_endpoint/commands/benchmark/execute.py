@@ -62,7 +62,7 @@ from inference_endpoint.config.schema import (
     TestMode,
     TestType,
 )
-from inference_endpoint.core.types import QueryResult, StreamChunk
+from inference_endpoint.core.types import QueryResult
 from inference_endpoint.dataset_manager.dataset import Dataset
 from inference_endpoint.dataset_manager.factory import DataLoaderFactory
 from inference_endpoint.endpoint_client.cpu_affinity import AffinityPlan, pin_loadgen
@@ -105,17 +105,15 @@ class ResponseCollector:
         self.count = 0
         self.pbar = pbar
 
-    def on_complete_hook(self, result: QueryResult | StreamChunk) -> None:
-        """Handle both QueryResult and terminal StreamChunk completions."""
+    def on_complete_hook(self, result: QueryResult) -> None:
+        """Handle query completion (called once per query via QueryResult)."""
         self.count += 1
-        if isinstance(result, QueryResult):
-            if result.error:
-                self.errors.append(f"Sample {result.id}: {result.error}")
-                if self.pbar:
-                    self.pbar.set_postfix(refresh=True, errors=len(self.errors))
-            elif self.collect_responses:
-                self.responses[result.id] = result.get_response_output_string()
-        # StreamChunk(is_complete=True) — no response text to collect, just count it
+        if result.error:
+            self.errors.append(f"Sample {result.id}: {result.error}")
+            if self.pbar:
+                self.pbar.set_postfix(refresh=True, errors=len(self.errors))
+        elif self.collect_responses:
+            self.responses[result.id] = result.get_response_output_string()
         if self.pbar:
             self.pbar.update(1)
 

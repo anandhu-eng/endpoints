@@ -383,9 +383,8 @@ class BenchmarkSession:
         """Route a response to the appropriate handler.
 
         Transport contract for streaming: the worker sends intermediate
-        StreamChunk(is_complete=False) messages for timing events, then a
-        final QueryResult with accumulated output for completion. The worker
-        never sends StreamChunk(is_complete=True).
+        StreamChunk messages for timing events, then a final QueryResult
+        with accumulated output for completion.
         """
         phase_issuer = self._current_phase_issuer
 
@@ -420,14 +419,6 @@ class BenchmarkSession:
                     self._on_sample_complete(resp)
 
         elif isinstance(resp, StreamChunk):
-            if resp.is_complete:
-                logger.error(
-                    "Received StreamChunk(is_complete=True) for %s. "
-                    "This violates the transport contract — the worker should "
-                    "send a QueryResult for completion, not a terminal StreamChunk.",
-                    resp.id,
-                )
-                return
             is_first = resp.metadata.get("first_chunk", False)
             event_type = (
                 SampleEventType.RECV_FIRST
