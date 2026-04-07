@@ -434,7 +434,9 @@ class BenchmarkSession:
                     sample_uuid=resp.id,
                 )
             )
-            # Terminal stream chunks affect inflight tracking just like QueryResult
+            # Terminal stream chunks affect inflight tracking just like QueryResult.
+            # Note: the worker also sends a final QueryResult after all StreamChunks,
+            # which publishes the COMPLETE event with accumulated output.
             if (
                 resp.is_complete
                 and phase_issuer is not None
