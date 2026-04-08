@@ -21,7 +21,7 @@ pytest -m integration                         # Integration tests only
 pytest --cov=src --cov-report=html            # With coverage
 pytest -xvs tests/unit/path/to/test_file.py  # Single test file
 
-# Code quality (run before commits)
+# Code quality — MUST run before every commit, no exceptions
 pre-commit run --all-files
 
 # Local testing with echo server
@@ -206,7 +206,7 @@ tests/
 
 All of these hooks run automatically on commit: trailing-whitespace, end-of-file-fixer, check-yaml, check-merge-conflict, debug-statements, `ruff` (lint + autofix), `ruff-format`, `mypy`, `prettier` (YAML/JSON/Markdown), license header enforcement.
 
-**Always run `pre-commit run --all-files` before committing.**
+**IMPORTANT: Always run `pre-commit run --all-files` before every commit.** Hooks may modify files (prettier, ruff-format, license headers). If files are modified, stage the changes and commit once. Never commit without running pre-commit first.
 
 See [Development Guide](docs/DEVELOPMENT.md) for full setup and workflow details.
 
