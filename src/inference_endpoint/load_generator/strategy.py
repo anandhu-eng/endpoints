@@ -47,7 +47,9 @@ logger = logging.getLogger(__name__)
 class PhaseIssuerProtocol(Protocol):
     """Minimal interface that strategies see for issuing samples."""
 
-    def issue(self, sample_index: int) -> str | None: ...
+    def issue(self, sample_index: int) -> str | None:
+        """Issue a sample. Returns query_id, or None if the session is stopping."""
+        ...
 
     issued_count: int
 

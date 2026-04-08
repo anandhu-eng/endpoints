@@ -21,9 +21,9 @@ BenchmarkSession.run(phases)
     |
     +-- STARTED
     +-- [saturation]     strategy.execute() → NO drain (keep in-flight saturated)
-    +-- [perf phase 1]   START_TRACKING → strategy.execute() → drain → STOP_TRACKING → snapshot report
+    +-- [perf phase 1]   START_PERFORMANCE_TRACKING → strategy.execute() → drain → STOP_PERFORMANCE_TRACKING → snapshot report
     +-- [saturation]     strategy.execute() → drain
-    +-- [perf phase 2]   START_TRACKING → strategy.execute() → drain → STOP_TRACKING → snapshot report
+    +-- [perf phase 2]   START_PERFORMANCE_TRACKING → strategy.execute() → drain → STOP_PERFORMANCE_TRACKING → snapshot report
     +-- [accuracy x N]   strategy.execute() → drain (uuid maps collected)
     +-- ENDED
     |
@@ -281,7 +281,9 @@ is no added latency compared to a poll-based approach.
   sync and non-blocking, so this honestly represents when the query entered the transport.
 - COMPLETE: `QueryResult.completed_at` is set via `force_setattr(monotonic_ns())` in
   `__post_init__`, regenerated on deserialization. Both ISSUED and COMPLETE timestamps
-  share the same ZMQ transit bias, which cancels in TTFT/TPOT calculations.
+  share the same ZMQ transit bias. TTFT (`RECV_FIRST - ISSUED`) is still sensitive
+  to this overhead since it spans the full ZMQ round-trip. TPOT avoids cross-process
+  clock skew by computing time deltas between consecutive chunks within the same process.
 
 ### LoadStrategy (Protocol)
 

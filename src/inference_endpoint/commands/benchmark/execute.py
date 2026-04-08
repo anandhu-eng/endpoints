@@ -410,128 +410,127 @@ async def _run_benchmark_async(
     collector = ResponseCollector(collect_responses=ctx.collect_responses, pbar=pbar)
 
     # ZMQ context for event publishing + service launcher
-    zmq_ctx = ManagedZMQContext(io_threads=2)
+    with ManagedZMQContext.scoped(io_threads=2) as zmq_ctx:
+        # Event publisher
+        pub_socket_name = f"ev_pub_{session_id}"
+        publisher = ZmqEventRecordPublisher(pub_socket_name, zmq_ctx, loop=loop)
 
-    # Event publisher
-    pub_socket_name = f"ev_pub_{session_id}"
-    publisher = ZmqEventRecordPublisher(pub_socket_name, zmq_ctx, loop=loop)
-
-    # Tmpfs directories for high-frequency writes (metrics mmap + event log)
-    # These are memory-backed; copied to report_dir on disk during finalization.
-    shm_base = (
-        Path("/dev/shm") if Path("/dev/shm").exists() else Path(tempfile.gettempdir())
-    )
-    tmpfs_dir = shm_base / f"benchmark_{session_id}"
-    tmpfs_dir.mkdir(parents=True, exist_ok=True)
-    metrics_dir = tmpfs_dir / "metrics"
-    metrics_dir.mkdir(parents=True, exist_ok=True)
-    event_log_dir = tmpfs_dir / "events"
-    event_log_dir.mkdir(parents=True, exist_ok=True)
-
-    # Launch service subprocesses
-    launcher = ServiceLauncher(zmq_ctx)
-    if zmq_ctx.socket_dir is None:
-        raise RuntimeError("ZMQ socket_dir must be set after publisher bind")
-    aggregator_args: list[str] = [
-        "--socket-dir",
-        zmq_ctx.socket_dir,
-        "--socket-name",
-        pub_socket_name,
-        "--metrics-dir",
-        str(metrics_dir),
-    ]
-    if ctx.enable_streaming:
-        aggregator_args.append("--streaming")
-    if ctx.tokenizer_name is not None:
-        aggregator_args.extend(["--tokenizer", ctx.tokenizer_name])
-
-    # EventLoggerService writes events.jsonl to tmpfs (high-frequency writes)
-    event_logger_args: list[str] = [
-        "--log-dir",
-        str(event_log_dir),
-        "--socket-dir",
-        zmq_ctx.socket_dir,
-        "--socket-name",
-        pub_socket_name,
-        "--writers",
-        "jsonl",
-    ]
-
-    await launcher.launch(
-        [
-            ServiceConfig(
-                module="inference_endpoint.async_utils.services.metrics_aggregator",
-                args=aggregator_args,
-            ),
-            ServiceConfig(
-                module="inference_endpoint.async_utils.services.event_logger",
-                args=event_logger_args,
-            ),
-        ],
-        timeout=30.0,
-    )
-
-    # Create endpoint client on the shared loop
-    endpoints = config.endpoint_config.endpoints
-    logger.info(f"Connecting: {endpoints}")
-    http_client: HTTPEndpointClient | None = None
-    try:
-        api_type: APIType = config.endpoint_config.api_type
-        http_config = config.settings.client.with_updates(
-            endpoint_urls=[urljoin(e, api_type.default_route()) for e in endpoints],
-            api_type=api_type,
-            api_key=config.endpoint_config.api_key,
-            event_logs_dir=ctx.report_dir,
-            cpu_affinity=ctx.affinity_plan,
+        # Tmpfs directories for high-frequency writes (metrics mmap + event log)
+        # These are memory-backed; copied to report_dir on disk during finalization.
+        shm_base = (
+            Path("/dev/shm")
+            if Path("/dev/shm").exists()
+            else Path(tempfile.gettempdir())
         )
-        http_client = await HTTPEndpointClient.create(http_config, loop)
-        issuer = HttpClientSampleIssuer(http_client)
-    except Exception as e:
-        pbar.close()
-        publisher.close()
-        launcher.kill_all()
-        zmq_ctx.cleanup()
-        raise SetupError(f"Failed to connect to endpoint: {e}") from e
+        tmpfs_dir = shm_base / f"benchmark_{session_id}"
+        tmpfs_dir.mkdir(parents=True, exist_ok=True)
+        metrics_dir = tmpfs_dir / "metrics"
+        metrics_dir.mkdir(parents=True, exist_ok=True)
+        event_log_dir = tmpfs_dir / "events"
+        event_log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create session
-    session = BenchmarkSession(
-        issuer=issuer,
-        event_publisher=publisher,
-        loop=loop,
-        on_sample_complete=collector.on_complete_hook,
-        session_id=session_id,
-    )
+        # Launch service subprocesses
+        launcher = ServiceLauncher(zmq_ctx)
+        if zmq_ctx.socket_dir is None:
+            raise RuntimeError("ZMQ socket_dir must be set after publisher bind")
+        aggregator_args: list[str] = [
+            "--socket-dir",
+            zmq_ctx.socket_dir,
+            "--socket-name",
+            pub_socket_name,
+            "--metrics-dir",
+            str(metrics_dir),
+        ]
+        if ctx.enable_streaming:
+            aggregator_args.append("--streaming")
+        if ctx.tokenizer_name is not None:
+            aggregator_args.extend(["--tokenizer", ctx.tokenizer_name])
 
-    phases = _build_phases(ctx)
-    report: Report | None = None
+        # EventLoggerService writes events.jsonl to tmpfs (high-frequency writes)
+        event_logger_args: list[str] = [
+            "--log-dir",
+            str(event_log_dir),
+            "--socket-dir",
+            zmq_ctx.socket_dir,
+            "--socket-name",
+            pub_socket_name,
+            "--writers",
+            "jsonl",
+        ]
 
-    loop.add_signal_handler(signal.SIGINT, session.stop)
-    try:
-        result = await session.run(phases)
-    except Exception as e:
-        raise ExecutionError(f"Benchmark execution failed: {e}") from e
-    finally:
-        loop.remove_signal_handler(signal.SIGINT)
-        logger.info("Cleaning up...")
+        await launcher.launch(
+            [
+                ServiceConfig(
+                    module="inference_endpoint.async_utils.services.metrics_aggregator",
+                    args=aggregator_args,
+                ),
+                ServiceConfig(
+                    module="inference_endpoint.async_utils.services.event_logger",
+                    args=event_logger_args,
+                ),
+            ],
+            timeout=30.0,
+        )
+
+        # Create endpoint client on the shared loop
+        endpoints = config.endpoint_config.endpoints
+        logger.info(f"Connecting: {endpoints}")
+        http_client: HTTPEndpointClient | None = None
         try:
-            if http_client:
-                await http_client.shutdown_async()
+            api_type: APIType = config.endpoint_config.api_type
+            http_config = config.settings.client.with_updates(
+                endpoint_urls=[urljoin(e, api_type.default_route()) for e in endpoints],
+                api_type=api_type,
+                api_key=config.endpoint_config.api_key,
+                event_logs_dir=ctx.report_dir,
+                cpu_affinity=ctx.affinity_plan,
+            )
+            http_client = await HTTPEndpointClient.create(http_config, loop)
+            issuer = HttpClientSampleIssuer(http_client)
         except Exception as e:
-            logger.warning(f"Client cleanup error: {e}")
-        publisher.close()
-        await asyncio.to_thread(launcher.wait_for_exit, 10.0)
+            pbar.close()
+            publisher.close()
+            launcher.kill_all()
+            raise SetupError(f"Failed to connect to endpoint: {e}") from e
 
-        # Build report AFTER aggregator has exited — ensures all metrics
-        # (TTFT, TPOT, OSL, latency) are fully written to KVStore.
+        # Create session
+        session = BenchmarkSession(
+            issuer=issuer,
+            event_publisher=publisher,
+            loop=loop,
+            on_sample_complete=collector.on_complete_hook,
+            session_id=session_id,
+        )
+
+        phases = _build_phases(ctx)
+        report: Report | None = None
+
+        loop.add_signal_handler(signal.SIGINT, session.stop)
         try:
-            kv_reader = _setup_kv_reader(metrics_dir, ctx.enable_streaming)
-            report = Report.from_kv_reader(kv_reader)
-            kv_reader.close()
+            result = await session.run(phases)
         except Exception as e:
-            logger.warning(f"Failed to build report from metrics: {e}")
+            raise ExecutionError(f"Benchmark execution failed: {e}") from e
+        finally:
+            loop.remove_signal_handler(signal.SIGINT)
+            logger.info("Cleaning up...")
+            try:
+                if http_client:
+                    await http_client.shutdown_async()
+            except Exception as e:
+                logger.warning(f"Client cleanup error: {e}")
+            publisher.close()
+            await asyncio.to_thread(launcher.wait_for_exit, 10.0)
 
-        zmq_ctx.cleanup()
-        pbar.close()
+            # Build report AFTER aggregator has exited — ensures all metrics
+            # (TTFT, TPOT, OSL, latency) are fully written to KVStore.
+            try:
+                kv_reader = _setup_kv_reader(metrics_dir, ctx.enable_streaming)
+                report = Report.from_kv_reader(kv_reader)
+                kv_reader.close()
+            except Exception as e:
+                logger.warning(f"Failed to build report from metrics: {e}")
+
+            pbar.close()
 
     return BenchmarkResult(
         session=result, collector=collector, report=report, tmpfs_dir=tmpfs_dir

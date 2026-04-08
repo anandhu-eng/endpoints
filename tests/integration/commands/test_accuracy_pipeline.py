@@ -151,7 +151,7 @@ class TestAccuracyPipeline:
             e for e in events if e.get("event_type") == "sample.complete"
         ]
         # Should have both perf (3) and accuracy (5) completions
-        assert len(complete_events) >= 5
+        assert len(complete_events) == 8
 
         # Verify results.json was written with accuracy scores
         results_path = report_dir / "results.json"
