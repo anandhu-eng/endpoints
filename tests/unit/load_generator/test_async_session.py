@@ -24,11 +24,12 @@ import pytest
 from inference_endpoint.config.runtime_settings import RuntimeSettings
 from inference_endpoint.config.schema import LoadPattern, LoadPatternType
 from inference_endpoint.core.record import (
+    ErrorEventType,
     EventRecord,
     SampleEventType,
     SessionEventType,
 )
-from inference_endpoint.core.types import Query, QueryResult, StreamChunk
+from inference_endpoint.core.types import ErrorData, Query, QueryResult, StreamChunk
 from inference_endpoint.dataset_manager.dataset import Dataset
 from inference_endpoint.load_generator.session import (
     BenchmarkSession,
@@ -527,8 +528,6 @@ class TestBenchmarkSession:
             while not issuer._issued:
                 await asyncio.sleep(0.005)
             q = issuer._issued[0]
-            from inference_endpoint.core.types import ErrorData
-
             issuer.inject_response(
                 QueryResult(
                     id=q.id,
@@ -540,8 +539,6 @@ class TestBenchmarkSession:
         await asyncio.wait_for(session.run(phases), timeout=5.0)
 
         # Should have published both COMPLETE and an error event
-        from inference_endpoint.core.record import ErrorEventType
-
         complete_events = publisher.events_of_type(SampleEventType.COMPLETE)
         error_events = [
             e for e in publisher.events if isinstance(e.event_type, ErrorEventType)
@@ -664,8 +661,6 @@ class TestBenchmarkSessionAccuracyErrorHandling:
         async def inject_mixed_responses():
             while len(issuer._issued) < 3:
                 await asyncio.sleep(0.005)
-            from inference_endpoint.core.types import ErrorData
-
             # First query: success
             issuer.inject_response(
                 QueryResult(id=issuer._issued[0].id, response_output="answer1")
@@ -710,8 +705,6 @@ class TestBenchmarkSessionAccuracyErrorHandling:
         async def inject_error():
             while not issuer._issued:
                 await asyncio.sleep(0.005)
-            from inference_endpoint.core.types import ErrorData
-
             issuer.inject_response(
                 QueryResult(
                     id=issuer._issued[0].id,
@@ -721,8 +714,6 @@ class TestBenchmarkSessionAccuracyErrorHandling:
 
         asyncio.create_task(inject_error())
         await asyncio.wait_for(session.run(phases), timeout=5.0)
-
-        from inference_endpoint.core.record import ErrorEventType
 
         error_events = [
             e for e in publisher.events if isinstance(e.event_type, ErrorEventType)

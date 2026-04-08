@@ -23,13 +23,17 @@ from collections.abc import Callable
 from time import monotonic_ns
 
 import pytest
-from inference_endpoint.load_generator.delay import poisson_delay_fn
+from inference_endpoint.config.runtime_settings import RuntimeSettings
+from inference_endpoint.config.schema import LoadPattern, LoadPatternType
+from inference_endpoint.load_generator.delay import make_delay_fn, poisson_delay_fn
 from inference_endpoint.load_generator.sample_order import WithoutReplacementSampleOrder
 from inference_endpoint.load_generator.strategy import (
     BurstStrategy,
     ConcurrencyStrategy,
     TimedIssueStrategy,
+    create_load_strategy,
 )
+from inference_endpoint.metrics.metric import Throughput
 
 
 def _constant_delay(ns: int = 1_000) -> Callable[[], int]:
@@ -295,9 +299,6 @@ class TestDelayFunctions:
             poisson_delay_fn(0, random.Random(42))
 
     def test_make_delay_fn_unsupported_pattern(self):
-        from inference_endpoint.config.schema import LoadPattern, LoadPatternType
-        from inference_endpoint.load_generator.delay import make_delay_fn
-
         lp = LoadPattern(type=LoadPatternType.MAX_THROUGHPUT)
         with pytest.raises(ValueError, match="No delay function"):
             make_delay_fn(lp, random.Random(42))
@@ -311,12 +312,6 @@ class TestDelayFunctions:
 @pytest.mark.unit
 class TestCreateLoadStrategy:
     def test_max_throughput(self):
-        from inference_endpoint.config.schema import LoadPattern, LoadPatternType
-        from inference_endpoint.load_generator.strategy import (
-            BurstStrategy,
-            create_load_strategy,
-        )
-
         loop = asyncio.new_event_loop()
         try:
             settings = _make_settings(LoadPattern(type=LoadPatternType.MAX_THROUGHPUT))
@@ -326,12 +321,6 @@ class TestCreateLoadStrategy:
             loop.close()
 
     def test_poisson_default(self):
-        from inference_endpoint.config.schema import LoadPattern, LoadPatternType
-        from inference_endpoint.load_generator.strategy import (
-            TimedIssueStrategy,
-            create_load_strategy,
-        )
-
         loop = asyncio.new_event_loop()
         try:
             settings = _make_settings(
@@ -344,12 +333,6 @@ class TestCreateLoadStrategy:
             loop.close()
 
     def test_poisson_executor(self):
-        from inference_endpoint.config.schema import LoadPattern, LoadPatternType
-        from inference_endpoint.load_generator.strategy import (
-            TimedIssueStrategy,
-            create_load_strategy,
-        )
-
         loop = asyncio.new_event_loop()
         try:
             settings = _make_settings(
@@ -362,12 +345,6 @@ class TestCreateLoadStrategy:
             loop.close()
 
     def test_concurrency(self):
-        from inference_endpoint.config.schema import LoadPattern, LoadPatternType
-        from inference_endpoint.load_generator.strategy import (
-            ConcurrencyStrategy,
-            create_load_strategy,
-        )
-
         loop = asyncio.new_event_loop()
         try:
             settings = _make_settings(
@@ -380,8 +357,6 @@ class TestCreateLoadStrategy:
             loop.close()
 
     def test_no_load_pattern_raises(self):
-        from inference_endpoint.load_generator.strategy import create_load_strategy
-
         loop = asyncio.new_event_loop()
         try:
             settings = _make_settings(None)
@@ -712,9 +687,6 @@ class TestBurstStrategyLargeScale:
 
 def _make_settings(load_pattern):
     """Create minimal RuntimeSettings for factory tests."""
-    from inference_endpoint.config.runtime_settings import RuntimeSettings
-    from inference_endpoint.metrics.metric import Throughput
-
     return RuntimeSettings(
         metric_target=Throughput(100),
         reported_metrics=[],

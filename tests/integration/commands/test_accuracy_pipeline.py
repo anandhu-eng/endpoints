@@ -23,6 +23,7 @@ don't (incorrect), then verify the scorer produces the expected accuracy.
 import json
 from pathlib import Path
 
+import msgspec.json
 import pandas as pd
 import pytest
 from inference_endpoint.commands.benchmark.execute import run_benchmark
@@ -136,8 +137,6 @@ class TestAccuracyPipeline:
 
         # Verify sample_idx_map has both phases
         with (report_dir / "sample_idx_map.json").open("rb") as f:
-            import msgspec.json
-
             idx_map = msgspec.json.decode(f.read())
         assert "performance" in idx_map
         assert "echo_accuracy" in idx_map
