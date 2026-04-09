@@ -90,7 +90,7 @@ Run accuracy evaluation with Pass@1 scoring using pre-defined benchmarks:
 
 - **GPQA** (default: GPQA Diamond)
 - **AIME** (default: AIME 2025)
-- **LiveCodeBench** (default: lite, release_v6) — requires [additional setup](src/inference_endpoint/dataset_manager/predefined/livecodebench/README.md)
+- **LiveCodeBench** (default: lite, release_v6) — requires [additional setup](src/inference_endpoint/evaluation/livecodebench/README.md)
 
 ## Documentation
 
@@ -126,4 +126,4 @@ This project draws inspiration from:
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE) for details.
+Apache License 2.0 — see [LICENSE](LICENSE.md) for details.
