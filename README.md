@@ -27,30 +27,27 @@ uv run pre-commit install
 ```
 
 <details>
-<summary>Direct usage without <code>uv run</code> prefix</summary>
+<summary>Alternative: activate the venv for direct usage</summary>
 
-Activate the uv-managed venv to run commands directly:
+After `uv sync`, activate the managed venv to skip the `uv run` prefix:
 
 ```bash
-source .venv/bin/activate
+source .venv/bin/activate       # uv-managed venv
 inference-endpoint --help
 pytest -m unit
 ```
 
-</details>
-
-<details>
-<summary>Using pip + venv instead (backward-compatible)</summary>
-
-> **Note:** pip installs from `pyproject.toml` directly and does not use `uv.lock`. Dependency versions may differ from the lockfile.
+**Backward-compatible setup (pip + venv):** does not use `uv.lock` — dependency versions may differ.
 
 ```bash
 python3.12 -m venv venv && source venv/bin/activate
 pip install -e ".[dev,test]"
 pre-commit install
-```
 
-After activating the venv, all commands work without the `uv run` prefix.
+# Same direct usage after activation:
+inference-endpoint --help
+pytest -m unit
+```
 
 </details>
 
@@ -111,11 +108,13 @@ See [Local Testing Guide](docs/LOCAL_TESTING.md) for detailed instructions.
 ### Running Tests and Examples
 
 ```bash
-# With uv
 uv run pytest -m "not performance and not run_explicitly"
+uv run pytest -m unit
+uv run pytest --cov=src --cov-report=html
 
-# With pip + venv (activate venv first)
-pytest -m "not performance and not run_explicitly"
+# ... or with an activated venv (source .venv/bin/activate):
+# pytest -m "not performance and not run_explicitly"
+# pytest -m unit
 
 # Run examples: follow instructions in examples/*/README.md
 ```
