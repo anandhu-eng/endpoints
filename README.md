@@ -15,7 +15,7 @@ git clone https://github.com/mlcommons/endpoints.git
 cd endpoints
 ```
 
-This project uses [uv](https://docs.astral.sh/uv/) for dependency management. All dependencies are pinned in `uv.lock`.
+This project uses [uv](https://docs.astral.sh/uv/) for dependency management. All dependencies are pinned in `uv.lock`. Install uv first: `curl -LsSf https://astral.sh/uv/install.sh | sh` (see [uv installation docs](https://docs.astral.sh/uv/getting-started/installation/) for other methods).
 
 ```bash
 # Install dependencies
@@ -24,6 +24,9 @@ uv sync
 # For development (includes linting, testing, and type-checking tools)
 uv sync --extra dev --extra test
 uv run pre-commit install
+
+# Run project commands with `uv run ...`, or activate the venv directly:
+# source .venv/bin/activate
 ```
 
 <details>

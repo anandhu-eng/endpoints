@@ -1,5 +1,5 @@
 [build-system]
-requires = ["uv_build>=0.7.6,<0.8"]
+requires = ["uv_build==0.7.6"]
 build-backend = "uv_build"
 
 [tool.uv]
@@ -14,7 +14,7 @@ environments = [
 [tool.uv-build]
 module-root = "src"
 data = {"inference_endpoint" = ["config/templates/*.yaml"]}
-exclude = ["evaluation/livecodebench/_server.py"]
+exclude = ["inference_endpoint/evaluation/livecodebench/_server.py"]
 
 [project]
 name = "inference-endpoint"

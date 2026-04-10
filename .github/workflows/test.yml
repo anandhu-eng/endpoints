@@ -14,6 +14,8 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+        with:
+          python-version-file: .python-version
 
       - name: Run tests
         run: uv run --frozen --extra test pytest -xv -m "not slow and not performance" --cov=src --cov-report=xml --cov-report=html
@@ -33,6 +35,8 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+        with:
+          python-version-file: .python-version
 
       - name: Audit dependencies for known vulnerabilities
         run: uv run --frozen --extra dev --extra test --extra performance pip-audit
