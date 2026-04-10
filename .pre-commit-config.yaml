@@ -67,6 +67,6 @@ repos:
         name: Check uv.lock is up-to-date
         entry: uv lock --check
         language: python
-        additional_dependencies: [uv]
+        additional_dependencies: ["uv==0.7.6"]
         pass_filenames: false
         files: ^pyproject\.toml$

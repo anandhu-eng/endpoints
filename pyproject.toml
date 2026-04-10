@@ -13,7 +13,6 @@ environments = [
 
 [tool.uv-build]
 module-root = "src"
-data = {"inference_endpoint" = ["config/templates/*.yaml"]}
 exclude = ["inference_endpoint/evaluation/livecodebench/_server.py"]
 
 [project]

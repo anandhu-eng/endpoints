@@ -23,9 +23,8 @@ RUN apt-get update && \
 RUN mkdir /mnt/inference-endpoint
 WORKDIR /mnt/inference-endpoint
 
-# Copy lockfile + project metadata first for Docker layer caching
-COPY pyproject.toml uv.lock .python-version ./
-COPY src/ ./src/
+# Copy lockfile + project metadata for dependency layer caching
+COPY pyproject.toml uv.lock .python-version README.md ./
 
 # Create a non-root user for security
 # Accept UID and GID as build arguments to match host user
@@ -40,4 +39,9 @@ RUN if ! getent group ${GROUP_ID}; then \
 USER appuser
 ENV PATH="/opt/venv/bin:/home/appuser/.local/bin:$PATH"
 
+# Install dependencies first (cached unless pyproject.toml/uv.lock change)
+RUN uv sync --frozen --no-install-project --extra dev --extra test
+
+# Copy source and install project
+COPY src/ ./src/
 RUN uv sync --frozen --extra dev --extra test
