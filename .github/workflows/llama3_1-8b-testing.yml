@@ -1,0 +1,238 @@
+name: test endpoints llama3-8b
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  setup_vllm_server:
+    runs-on: [ self-hosted, mlc2 ]
+    environment: benchmark-approval  # Requires approval from designated reviewers before proceeding
+    concurrency:
+      group: endpts-vllm-server
+      cancel-in-progress: false  # Wait for the current run to finish, don't cancel it
+    outputs:
+      base_sha: ${{ steps.capture_shas.outputs.base_sha }}
+      head_sha: ${{ steps.capture_shas.outputs.head_sha }}
+    steps:
+      - name: Capture PR commit SHAs
+        id: capture_shas
+        run: |
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          # Use short SHAs (7 chars) for readability in folder names
+          BASE_SHA_SHORT="${BASE_SHA:0:7}"
+          HEAD_SHA_SHORT="${HEAD_SHA:0:7}"
+          echo "base_sha=$BASE_SHA_SHORT" >> $GITHUB_OUTPUT
+          echo "head_sha=$HEAD_SHA_SHORT" >> $GITHUB_OUTPUT
+          echo "Base SHA : $BASE_SHA_SHORT"
+          echo "Head SHA : $HEAD_SHA_SHORT"
+
+      - name: Number of GPUs readily available
+        run: |
+          REQUIRED_GPUS=1
+          MAX_WAIT=7200  # 2 hours
+          INTERVAL=60    # Check every 60 seconds
+          ELAPSED=0
+          LAST_LOG=0     # Fix: initialize LAST_LOG before use
+          LOG_INTERVAL=300  # Log "waiting" message every 5 minutes
+
+          while true; do
+            # Get GPU IDs where memory used is less than 100MB (free)
+            FREE_GPU_IDS=$(nvidia-smi --query-gpu=index,memory.used \
+                    --format=csv,noheader,nounits | \
+                    awk -F',' '$2 < 100 {print $1}' | tr -d ' ')
+
+            FREE_GPU_COUNT=$(echo "$FREE_GPU_IDS" | grep -c '[0-9]' || echo 0)
+
+            if [ "$FREE_GPU_COUNT" -ge "$REQUIRED_GPUS" ]; then
+              # Pick only the required number of GPUs
+              SELECTED_GPUS=$(echo "$FREE_GPU_IDS" | head -n "$REQUIRED_GPUS" | tr '\n' ',' | sed 's/,$//')
+              echo "Free GPUs found: $FREE_GPU_IDS"
+              echo "Selected GPUs : $SELECTED_GPUS"
+              echo "SELECTED_GPUS=$SELECTED_GPUS" >> $GITHUB_ENV
+              # Build Podman GPU flags
+              PODMAN_GPU_FLAGS=""
+              for GPU_ID in $(echo "$SELECTED_GPUS" | tr ',' ' '); do
+                PODMAN_GPU_FLAGS="$PODMAN_GPU_FLAGS --device nvidia.com/gpu=$GPU_ID"
+              done
+              PODMAN_GPU_FLAGS="$PODMAN_GPU_FLAGS -e NVIDIA_VISIBLE_DEVICES=$SELECTED_GPUS"
+              echo "PODMAN_GPU_FLAGS=$PODMAN_GPU_FLAGS" >> $GITHUB_ENV
+              break
+            fi
+
+            if [ "$ELAPSED" -ge "$MAX_WAIT" ]; then
+              echo "Timeout! Could not get $REQUIRED_GPUS free GPUs after $MAX_WAIT seconds."
+              exit 1
+            fi
+
+            # Only log every 5 minutes
+            if [ "$((ELAPSED - LAST_LOG))" -ge "$LOG_INTERVAL" ]; then
+              echo "Still waiting for GPUs... ($((ELAPSED / 60)) minutes elapsed, $FREE_GPU_COUNT free)"
+              LAST_LOG=$ELAPSED
+            fi
+
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup vLLM server
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          MODEL_NAME=meta-llama/Llama-3.1-8B-Instruct
+          HF_HOME=/data/common/anandhu/endptshfdown
+          echo "Extra GPU flags for PODMAN: $PODMAN_GPU_FLAGS"
+          docker run -dt --name vllm_server_llama3_endpts \
+            -v ${HF_HOME}:/root/.cache/huggingface \
+            $PODMAN_GPU_FLAGS \
+            --env "HUGGING_FACE_HUB_TOKEN=$HF_TOKEN" \
+            --network host \
+            --ipc=host \
+            vllm/vllm-openai:latest \
+            --model ${MODEL_NAME} \
+            --gpu_memory_utilization 0.80 \
+            --tensor-parallel-size 1 \
+            --trust-request-chat-template \
+            --port 9000
+
+          # Wait for vLLM to be ready
+          echo "Waiting for vLLM server to be ready..."
+          MAX_WAIT=1200  # 10 minutes
+          ELAPSED=0
+          INTERVAL=10
+
+          until [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:9000/health)" = "200" ]; do
+            if [ "$ELAPSED" -ge "$MAX_WAIT" ]; then
+              echo "Timeout! vLLM server did not start in time."
+              docker logs vllm_server_llama3_endpts
+              exit 1
+            fi
+            echo "Still waiting... (${ELAPSED}s elapsed)"
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+
+          echo "vLLM server is ready!"
+          docker logs vllm_server_llama3_endpts
+
+  start_inferencing:
+    needs: setup_vllm_server
+    runs-on: [ self-hosted, mlc2 ]
+    concurrency:
+      group: inference-llama3-8b
+      cancel-in-progress: false  # Wait for the current run to finish, don't cancel it
+    strategy:
+      max-parallel: 1
+      matrix:
+        target_concurrencies: [1, 4, 16]
+    steps:
+      - name: Checkout PR head branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python3 -m venv gh_action_endpts
+          source gh_action_endpts/bin/activate
+          pip install .
+          pip install nltk evaluate rouge_score
+
+      - name: Start inference (num_workers=${{ matrix.target_concurrencies }})
+        run: |
+          source gh_action_endpts/bin/activate
+          sed -i 's/samples: .*/samples: 500/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+          sed -i 's/localhost:8000/localhost:9000/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+          sed -i 's/target_concurrency: .*/target_concurrency: ${{ matrix.target_concurrencies }}/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+          sed -i 's/n_samples_to_issue: .*/n_samples_to_issue: 500/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+          cat examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+          inference-endpoint benchmark from-config \
+            -c examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml \
+            --timeout 6000
+
+          # Print results
+          echo "===== result_summary.json ====="
+          cat logs/llama3_8b_cnn_online/result_summary.json
+          echo "===== results.json ====="
+          cat logs/llama3_8b_cnn_online/results.json
+          echo "===== report.txt ====="
+          cat logs/llama3_8b_cnn_online/report.txt
+
+      - name: Upload results to pr-tests branch
+        env:
+          BASE_SHA: ${{ needs.setup_vllm_server.outputs.base_sha }}
+          HEAD_SHA: ${{ needs.setup_vllm_server.outputs.head_sha }}
+          CONCURRENCY: ${{ matrix.target_concurrencies }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Fetch and switch to pr-tests branch (create if it doesn't exist)
+          git fetch origin pr-tests 2>/dev/null || true
+          if git show-ref --verify --quiet refs/remotes/origin/pr-tests; then
+            git checkout -b pr-tests origin/pr-tests
+          else
+            echo "pr-tests branch not found, creating it as an orphan branch"
+            git checkout --orphan pr-tests
+            git rm -rf . 2>/dev/null || true
+          fi
+
+          # Determine trial count by checking existing folders for this sha pair
+          FOLDER_PREFIX="llama-3.1-8b_vllm_perf_concurrency${CONCURRENCY}_${BASE_SHA}-${HEAD_SHA}_trial"
+          EXISTING=$(ls -d ${FOLDER_PREFIX}* 2>/dev/null | wc -l)
+          TRIAL_COUNT=$((EXISTING + 1))
+
+          # Build the result folder name
+          RESULT_FOLDER="${FOLDER_PREFIX}${TRIAL_COUNT}"
+          echo "Result folder: $RESULT_FOLDER"
+          mkdir -p "$RESULT_FOLDER"
+
+          # Copy all files from logs/llama3_8b_cnn_online/ — switch back to head sha first
+          # to access the logs, then copy to pr-tests working tree
+          # We use a temp path since we're on the pr-tests branch now
+          TEMP_LOGS="/tmp/benchmark_logs_${CONCURRENCY}_$$"
+          git stash 2>/dev/null || true
+
+          # Checkout just the logs from the head sha into a temp location
+          git show ${{ github.event.pull_request.head.sha }}:. > /dev/null 2>&1 || true
+          # Logs are on disk (not tracked by git), so just copy them directly
+          cp -r ${{ github.workspace }}/logs/llama3_8b_cnn_online/. "$RESULT_FOLDER/"
+
+          # Commit and push
+          git add "$RESULT_FOLDER"
+          git commit -m "Add benchmark results: $RESULT_FOLDER [PR #${{ github.event.pull_request.number }}]"
+          git push origin pr-tests
+
+  teardown_server:
+    needs: start_inferencing
+    runs-on: [ self-hosted, mlc2 ]
+    if: always()  # Always teardown even if inference fails
+
+    steps:
+      - name: Stop vLLM server
+        run: |
+          docker stop vllm_server_llama3_endpts 2>/dev/null || true
+          docker rm -f vllm_server_llama3_endpts 2>/dev/null || true
+          echo "vLLM server stopped and removed."
+
+      - name: Clean virtual env
+        run: |
+          rm -rf ${{ github.workspace }}/gh_action_endpts || true
+
+      - name: Clean workspace
+        run: |
+          rm -rf ${{ github.workspace }}
+          mkdir -p ${{ github.workspace }}
