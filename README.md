@@ -15,36 +15,31 @@ git clone https://github.com/mlcommons/endpoints.git
 cd endpoints
 ```
 
-**Option A: uv (recommended)** — faster, lockfile-verified dependencies
+This project uses [uv](https://docs.astral.sh/uv/) for dependency management. All dependencies are pinned in `uv.lock`.
 
 ```bash
-# As a user
+# Install dependencies
 uv sync
 
-# As a developer (with development and test extras)
+# For development (includes linting, testing, and type-checking tools)
 uv sync --extra dev --extra test
 uv run pre-commit install
-
-# Activate the venv to use python/pytest/etc. directly (optional)
-source .venv/bin/activate
-pytest -m "not performance and not run_explicitly"
-inference-endpoint --help
 ```
 
-**Option B: pip + venv**
+<details>
+<summary>Using pip + venv instead (backward-compatible)</summary>
+
+> **Note:** pip installs from `pyproject.toml` directly and does not use `uv.lock`. Dependency versions may differ from the lockfile.
 
 ```bash
-# Create virtual environment
-python3.12 -m venv venv
-source venv/bin/activate
-
-# As a user
-pip install .
-
-# As a developer (with development and test extras)
+python3.12 -m venv venv && source venv/bin/activate
 pip install -e ".[dev,test]"
 pre-commit install
 ```
+
+After activating the venv, all commands work without the `uv run` prefix.
+
+</details>
 
 ### Basic Usage
 
@@ -86,10 +81,10 @@ inference-endpoint benchmark offline \
 
 ```bash
 # Start local echo server
-python3 -m inference_endpoint.testing.echo_server --port 8765 &
+uv run python -m inference_endpoint.testing.echo_server --port 8765 &
 
 # Test with dummy dataset (included in repo)
-inference-endpoint benchmark offline \
+uv run inference-endpoint benchmark offline \
   --endpoints http://localhost:8765 \
   --model Qwen/Qwen3-8B \
   --dataset tests/datasets/dummy_1k.jsonl
@@ -103,11 +98,10 @@ See [Local Testing Guide](docs/LOCAL_TESTING.md) for detailed instructions.
 ### Running Tests and Examples
 
 ```bash
-# With uv (after uv sync --extra test)
+# With uv
 uv run pytest -m "not performance and not run_explicitly"
 
-# With pip (activate venv first)
-pip install ".[test]"
+# With pip + venv (activate venv first)
 pytest -m "not performance and not run_explicitly"
 
 # Run examples: follow instructions in examples/*/README.md

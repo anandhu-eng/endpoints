@@ -9,36 +9,43 @@ High-performance benchmarking tool for LLM inference endpoints targeting 50k+ QP
 ## Common Commands
 
 ```bash
-# Development setup (uv — recommended)
+# Development setup
 uv sync --extra dev --extra test
 uv run pre-commit install
 
-# Development setup (pip — still works)
+# Testing
+uv run pytest                                        # All tests (excludes slow/performance)
+uv run pytest -m unit                                # Unit tests only
+uv run pytest -m integration                         # Integration tests only
+uv run pytest --cov=src --cov-report=html            # With coverage
+uv run pytest -xvs tests/unit/path/to/test_file.py  # Single test file
+
+# Code quality (run before commits)
+uv run pre-commit run --all-files
+
+# Local testing with echo server
+uv run python -m inference_endpoint.testing.echo_server --port 8765
+uv run inference-endpoint probe --endpoints http://localhost:8765 --model test-model
+
+# CLI usage
+uv run inference-endpoint benchmark offline --endpoints URL --model NAME --dataset PATH
+uv run inference-endpoint benchmark online --endpoints URL --model NAME --dataset PATH --load-pattern poisson --target-qps 100
+uv run inference-endpoint benchmark from-config --config config.yaml
+```
+
+### Backward-compatible setup (pip + venv)
+
+Does not use `uv.lock` — dependency versions may differ from the lockfile.
+
+```bash
 python3.12 -m venv venv && source venv/bin/activate
 pip install -e ".[dev,test]"
 pre-commit install
 
-# Testing
-pytest                                        # All tests (excludes slow/performance)
-pytest -m unit                                # Unit tests only
-pytest -m integration                         # Integration tests only
-pytest --cov=src --cov-report=html            # With coverage
-pytest -xvs tests/unit/path/to/test_file.py  # Single test file
-
-# Code quality (run before commits)
+# After activating the venv, commands run without the `uv run` prefix:
+pytest -m unit
 pre-commit run --all-files
-
-# Local testing with echo server
-python -m inference_endpoint.testing.echo_server --port 8765
-inference-endpoint probe --endpoints http://localhost:8765 --model test-model
-
-# CLI usage
 inference-endpoint benchmark offline --endpoints URL --model NAME --dataset PATH
-inference-endpoint benchmark online --endpoints URL --model NAME --dataset PATH --load-pattern poisson --target-qps 100
-inference-endpoint benchmark from-config --config config.yaml
-
-# Or with uv (auto-creates venv, uses lockfile)
-uv run inference-endpoint benchmark offline --endpoints URL --model NAME --dataset PATH
 ```
 
 ## Architecture
