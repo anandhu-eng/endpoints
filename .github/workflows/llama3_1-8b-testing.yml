@@ -167,7 +167,9 @@ jobs:
           echo "===== results.json ====="
           cat logs/llama3_8b_cnn_online/results.json
           echo "===== report.txt ====="
-          cat logs/llama3_8b_cnn_online/report.txt
+          cat logs/llama3_8b_cnn_online/report.txt]
+
+          git stash push examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
 
       - name: Upload results to pr-tests branch
         env:
