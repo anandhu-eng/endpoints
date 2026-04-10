@@ -27,27 +27,17 @@ uv run pre-commit install
 ```
 
 <details>
-<summary>Alternative: activate the venv for direct usage</summary>
+<summary>Using pip + venv instead (backward-compatible)</summary>
 
-After `uv sync`, activate the managed venv to skip the `uv run` prefix:
-
-```bash
-source .venv/bin/activate       # uv-managed venv
-inference-endpoint --help
-pytest -m unit
-```
-
-**Backward-compatible setup (pip + venv):** does not use `uv.lock` — dependency versions may differ.
+> **Note:** pip installs from `pyproject.toml` directly and does not use `uv.lock`. Dependency versions may differ.
 
 ```bash
 python3.12 -m venv venv && source venv/bin/activate
 pip install -e ".[dev,test]"
 pre-commit install
-
-# Same direct usage after activation:
-inference-endpoint --help
-pytest -m unit
 ```
+
+After activating the venv, all commands below work without the `uv run` prefix.
 
 </details>
 
@@ -85,6 +75,11 @@ uv run inference-endpoint benchmark offline \
   --model Qwen/Qwen3-8B \
   --dataset tests/datasets/dummy_1k.jsonl \
   --num-samples 5000
+
+# ... or activate the venv to skip the `uv run` prefix:
+# source .venv/bin/activate
+# inference-endpoint --help
+# inference-endpoint benchmark offline --endpoints URL --model NAME --dataset PATH
 ```
 
 ### Running Locally
@@ -101,6 +96,10 @@ uv run inference-endpoint benchmark offline \
 
 # Stop echo server
 pkill -f echo_server
+
+# ... or with an activated venv (source .venv/bin/activate):
+# python -m inference_endpoint.testing.echo_server --port 8765 &
+# inference-endpoint benchmark offline --endpoints http://localhost:8765 --model Qwen/Qwen3-8B --dataset tests/datasets/dummy_1k.jsonl
 ```
 
 See [Local Testing Guide](docs/LOCAL_TESTING.md) for detailed instructions.
