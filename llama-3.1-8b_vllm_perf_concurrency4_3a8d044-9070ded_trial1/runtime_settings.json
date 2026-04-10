@@ -1,0 +1,8 @@
+{
+  "max_duration_ms": 3600000,
+  "min_duration_ms": 600000,
+  "min_sample_count": 1,
+  "n_samples_from_dataset": 13368,
+  "n_samples_to_issue": 500,
+  "total_samples_to_issue": 500
+}
