@@ -7,7 +7,7 @@ on:
 jobs:
   setup_vllm_server:
     runs-on: [ self-hosted, mlc2 ]
-    environment: benchmark-approval  # Requires approval from designated reviewers before proceeding
+    environment: sef-hosted-runner-benchmark-approval  # Requires approval from designated reviewers before proceeding
     concurrency:
       group: endpts-vllm-server
       cancel-in-progress: false  # Wait for the current run to finish, don't cancel it
