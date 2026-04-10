@@ -7,6 +7,7 @@ A high-performance benchmarking tool for LLM endpoints.
 ### Installation
 
 
+
 **Requirements**: Python 3.12+ (Python 3.12 is recommended for optimal performance. GIL-less mode in higher Python versions is not yet supported.)
 
 ```bash
