@@ -27,6 +27,19 @@ uv run pre-commit install
 ```
 
 <details>
+<summary>Direct usage without <code>uv run</code> prefix</summary>
+
+Activate the uv-managed venv to run commands directly:
+
+```bash
+source .venv/bin/activate
+inference-endpoint --help
+pytest -m unit
+```
+
+</details>
+
+<details>
 <summary>Using pip + venv instead (backward-compatible)</summary>
 
 > **Note:** pip installs from `pyproject.toml` directly and does not use `uv.lock`. Dependency versions may differ from the lockfile.
@@ -45,24 +58,24 @@ After activating the venv, all commands work without the `uv run` prefix.
 
 ```bash
 # Show help
-inference-endpoint --help
+uv run inference-endpoint --help
 
 # Show system information
-inference-endpoint -v info
+uv run inference-endpoint -v info
 
 # Test endpoint connectivity
-inference-endpoint probe \
+uv run inference-endpoint probe \
   --endpoints http://your-endpoint:8000 \
   --model Qwen/Qwen3-8B
 
 # Run offline benchmark (max throughput - uses all dataset samples)
-inference-endpoint benchmark offline \
+uv run inference-endpoint benchmark offline \
   --endpoints http://your-endpoint:8000 \
   --model Qwen/Qwen3-8B \
   --dataset tests/datasets/dummy_1k.jsonl
 
 # Run online benchmark (sustained QPS - requires --target-qps, --load-pattern)
-inference-endpoint benchmark online \
+uv run inference-endpoint benchmark online \
   --endpoints http://your-endpoint:8000 \
   --model Qwen/Qwen3-8B \
   --dataset tests/datasets/dummy_1k.jsonl \
@@ -70,7 +83,7 @@ inference-endpoint benchmark online \
   --target-qps 100
 
 # With explicit sample count
-inference-endpoint benchmark offline \
+uv run inference-endpoint benchmark offline \
   --endpoints http://your-endpoint:8000 \
   --model Qwen/Qwen3-8B \
   --dataset tests/datasets/dummy_1k.jsonl \
