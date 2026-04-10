@@ -1,0 +1,16 @@
+{
+  "config": {
+    "endpoint": [
+      "http://localhost:9000"
+    ],
+    "mode": "perf",
+    "target_qps": null
+  },
+  "results": {
+    "total": 500,
+    "successful": 500,
+    "failed": 0,
+    "elapsed_time": 117.085095985,
+    "qps": 4.2703983439878295
+  }
+}
