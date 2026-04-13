@@ -152,10 +152,10 @@ jobs:
       - name: Start inference (num_workers=${{ matrix.target_concurrencies }})
         run: |
           source gh_action_endpts/bin/activate
-          sed -i 's/samples: .*/samples: 500/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+          sed -i 's/samples: .*/samples: 2000/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
           sed -i 's/localhost:8000/localhost:9000/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
           sed -i 's/target_concurrency: .*/target_concurrency: ${{ matrix.target_concurrencies }}/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
-          sed -i 's/n_samples_to_issue: .*/n_samples_to_issue: 500/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+          sed -i 's/n_samples_to_issue: .*/n_samples_to_issue: 2000/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
           cat examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
           inference-endpoint benchmark from-config \
             -c examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml \
