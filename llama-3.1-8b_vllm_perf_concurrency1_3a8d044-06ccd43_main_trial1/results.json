@@ -1,0 +1,33 @@
+{
+  "config": {
+    "endpoint": [
+      "http://localhost:9000"
+    ],
+    "mode": "perf",
+    "target_qps": null
+  },
+  "results": {
+    "total": 2000,
+    "successful": 2000,
+    "failed": 0,
+    "elapsed_time": 1707.758252551,
+    "qps": 1.1711259465515438
+  },
+  "accuracy_scores": {
+    "cnn_dailymail::llama3_8b": {
+      "dataset_name": "cnn_dailymail::llama3_8b",
+      "num_samples": 13368,
+      "extractor": "IdentityExtractor",
+      "ground_truth_column": "highlights",
+      "score": {
+        "rouge1": "38.8324",
+        "rouge2": "15.9608",
+        "rougeL": "24.5544",
+        "rougeLsum": "35.8798",
+        "gen_len": "8164045",
+        "gen_num": 13368
+      },
+      "n_repeats": 1
+    }
+  }
+}
