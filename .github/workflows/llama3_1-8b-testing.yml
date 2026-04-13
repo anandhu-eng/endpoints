@@ -7,10 +7,10 @@ on:
 jobs:
   setup_vllm_server:
     runs-on: [ self-hosted, mlc2 ]
-    environment: sef-hosted-runner-benchmark-approval  # Requires approval from designated reviewers before proceeding
+    environment: sef-hosted-runner-benchmark-approval
     concurrency:
       group: endpts-vllm-server
-      cancel-in-progress: false  # Wait for the current run to finish, don't cancel it
+      cancel-in-progress: false
     outputs:
       base_sha: ${{ steps.capture_shas.outputs.base_sha }}
       head_sha: ${{ steps.capture_shas.outputs.head_sha }}
@@ -20,7 +20,6 @@ jobs:
         run: |
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-          # Use short SHAs (7 chars) for readability in folder names
           BASE_SHA_SHORT="${BASE_SHA:0:7}"
           HEAD_SHA_SHORT="${HEAD_SHA:0:7}"
           echo "base_sha=$BASE_SHA_SHORT" >> $GITHUB_OUTPUT
@@ -28,17 +27,16 @@ jobs:
           echo "Base SHA : $BASE_SHA_SHORT"
           echo "Head SHA : $HEAD_SHA_SHORT"
 
-      - name: Number of GPUs readily available
+      - name: Wait for free GPU
         run: |
           REQUIRED_GPUS=1
-          MAX_WAIT=7200  # 2 hours
-          INTERVAL=60    # Check every 60 seconds
+          MAX_WAIT=7200
+          INTERVAL=60
           ELAPSED=0
-          LAST_LOG=0     # Fix: initialize LAST_LOG before use
-          LOG_INTERVAL=300  # Log "waiting" message every 5 minutes
+          LAST_LOG=0
+          LOG_INTERVAL=300
 
           while true; do
-            # Get GPU IDs where memory used is less than 100MB (free)
             FREE_GPU_IDS=$(nvidia-smi --query-gpu=index,memory.used \
                     --format=csv,noheader,nounits | \
                     awk -F',' '$2 < 100 {print $1}' | tr -d ' ')
@@ -46,12 +44,10 @@ jobs:
             FREE_GPU_COUNT=$(echo "$FREE_GPU_IDS" | grep -c '[0-9]' || echo 0)
 
             if [ "$FREE_GPU_COUNT" -ge "$REQUIRED_GPUS" ]; then
-              # Pick only the required number of GPUs
               SELECTED_GPUS=$(echo "$FREE_GPU_IDS" | head -n "$REQUIRED_GPUS" | tr '\n' ',' | sed 's/,$//')
               echo "Free GPUs found: $FREE_GPU_IDS"
               echo "Selected GPUs : $SELECTED_GPUS"
               echo "SELECTED_GPUS=$SELECTED_GPUS" >> $GITHUB_ENV
-              # Build Podman GPU flags
               PODMAN_GPU_FLAGS=""
               for GPU_ID in $(echo "$SELECTED_GPUS" | tr ',' ' '); do
                 PODMAN_GPU_FLAGS="$PODMAN_GPU_FLAGS --device nvidia.com/gpu=$GPU_ID"
@@ -66,7 +62,6 @@ jobs:
               exit 1
             fi
 
-            # Only log every 5 minutes
             if [ "$((ELAPSED - LAST_LOG))" -ge "$LOG_INTERVAL" ]; then
               echo "Still waiting for GPUs... ($((ELAPSED / 60)) minutes elapsed, $FREE_GPU_COUNT free)"
               LAST_LOG=$ELAPSED
@@ -101,9 +96,8 @@ jobs:
             --trust-request-chat-template \
             --port 9000
 
-          # Wait for vLLM to be ready
           echo "Waiting for vLLM server to be ready..."
-          MAX_WAIT=1200  # 10 minutes
+          MAX_WAIT=1200
           ELAPSED=0
           INTERVAL=10
 
@@ -121,108 +115,300 @@ jobs:
           echo "vLLM server is ready!"
           docker logs vllm_server_llama3_endpts
 
-  start_inferencing:
+  run_benchmarks:
     needs: setup_vllm_server
     runs-on: [ self-hosted, mlc2 ]
     concurrency:
       group: inference-llama3-8b
-      cancel-in-progress: false  # Wait for the current run to finish, don't cancel it
+      cancel-in-progress: false
     strategy:
       max-parallel: 1
       matrix:
         target_concurrencies: [1, 4, 16]
     steps:
-      - name: Checkout PR head branch
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Install dependencies
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+
+      - name: Install dependencies (main)
         run: |
           python3 -m venv gh_action_endpts
           source gh_action_endpts/bin/activate
           pip install .
           pip install nltk evaluate rouge_score
 
-      - name: Start inference (num_workers=${{ matrix.target_concurrencies }})
+      - name: Warmup run — main (no upload)
+        run: |
+          source gh_action_endpts/bin/activate
+          sed -i 's/samples: .*/samples: 50/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+          sed -i 's/localhost:8000/localhost:9000/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+          sed -i 's/target_concurrency: .*/target_concurrency: ${{ matrix.target_concurrencies }}/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+          sed -i 's/n_samples_to_issue: .*/n_samples_to_issue: 50/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+          echo "Running warmup on main branch (50 samples, results discarded)..."
+          inference-endpoint benchmark from-config \
+            -c examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml \
+            --timeout 6000
+          echo "Warmup complete."
+          git checkout -- examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+
+      - name: Benchmark — main branch
         run: |
           source gh_action_endpts/bin/activate
           sed -i 's/samples: .*/samples: 2000/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
           sed -i 's/localhost:8000/localhost:9000/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
           sed -i 's/target_concurrency: .*/target_concurrency: ${{ matrix.target_concurrencies }}/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
           sed -i 's/n_samples_to_issue: .*/n_samples_to_issue: 2000/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
-          cat examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+          echo "Running benchmark on main branch (2000 samples)..."
           inference-endpoint benchmark from-config \
             -c examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml \
             --timeout 6000
-
-          # Print results
-          echo "===== result_summary.json ====="
+          echo "===== result_summary.json (main) ====="
           cat logs/llama3_8b_cnn_online/result_summary.json
-          echo "===== results.json ====="
-          cat logs/llama3_8b_cnn_online/results.json
-          echo "===== report.txt ====="
-          cat logs/llama3_8b_cnn_online/report.txt
+          git checkout -- examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
 
-          git stash push examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
-
-      - name: Upload results to pr-tests branch
+      - name: Upload main branch results
         env:
           BASE_SHA: ${{ needs.setup_vllm_server.outputs.base_sha }}
           HEAD_SHA: ${{ needs.setup_vllm_server.outputs.head_sha }}
           CONCURRENCY: ${{ matrix.target_concurrencies }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Configure git
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Fetch and switch to pr-tests branch (create if it doesn't exist)
+          # Save logs before switching branches
+          TEMP_LOGS="/tmp/benchmark_main_${CONCURRENCY}_$$"
+          cp -r logs/llama3_8b_cnn_online/ "$TEMP_LOGS"
+
           git fetch origin pr-tests 2>/dev/null || true
           if git show-ref --verify --quiet refs/remotes/origin/pr-tests; then
-            git checkout -b pr-tests origin/pr-tests
+            git checkout -b pr-tests origin/pr-tests 2>/dev/null || git checkout pr-tests
           else
-            echo "pr-tests branch not found, creating it as an orphan branch"
+            echo "Creating pr-tests as orphan branch"
             git checkout --orphan pr-tests
             git rm -rf . 2>/dev/null || true
           fi
 
-          # Determine trial count by checking existing folders for this sha pair
-          FOLDER_PREFIX="llama-3.1-8b_vllm_perf_concurrency${CONCURRENCY}_${BASE_SHA}-${HEAD_SHA}_trial"
+          FOLDER_PREFIX="llama-3.1-8b_vllm_perf_concurrency${CONCURRENCY}_${BASE_SHA}-${HEAD_SHA}_main_trial"
           EXISTING=$(ls -d ${FOLDER_PREFIX}* 2>/dev/null | wc -l)
           TRIAL_COUNT=$((EXISTING + 1))
-
-          # Build the result folder name
           RESULT_FOLDER="${FOLDER_PREFIX}${TRIAL_COUNT}"
-          echo "Result folder: $RESULT_FOLDER"
+          echo "Uploading main results to: $RESULT_FOLDER"
           mkdir -p "$RESULT_FOLDER"
+          cp -r "$TEMP_LOGS/." "$RESULT_FOLDER/"
 
-          # Copy all files from logs/llama3_8b_cnn_online/ — switch back to head sha first
-          # to access the logs, then copy to pr-tests working tree
-          # We use a temp path since we're on the pr-tests branch now
-          TEMP_LOGS="/tmp/benchmark_logs_${CONCURRENCY}_$$"
-          git stash 2>/dev/null || true
-
-          # Checkout just the logs from the head sha into a temp location
-          git show ${{ github.event.pull_request.head.sha }}:. > /dev/null 2>&1 || true
-          # Logs are on disk (not tracked by git), so just copy them directly
-          cp -r ${{ github.workspace }}/logs/llama3_8b_cnn_online/. "$RESULT_FOLDER/"
-
-          # Commit and push
           git add "$RESULT_FOLDER"
-          git commit -m "Add benchmark results: $RESULT_FOLDER [PR #${{ github.event.pull_request.number }}]"
+          git commit -m "Add main benchmark results: $RESULT_FOLDER [PR #${{ github.event.pull_request.number }}]"
           git push origin pr-tests
 
-  teardown_server:
-    needs: start_inferencing
-    runs-on: [ self-hosted, mlc2 ]
-    if: always()  # Always teardown even if inference fails
+          # Return to main branch for next steps
+          git checkout ${{ github.event.pull_request.base.ref }}
 
+      - name: Checkout PR head branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Install dependencies (PR)
+        run: |
+          python3 -m venv gh_action_endpts
+          source gh_action_endpts/bin/activate
+          pip install .
+          pip install nltk evaluate rouge_score
+
+      - name: Warmup run — PR branch (no upload)
+        run: |
+          source gh_action_endpts/bin/activate
+          sed -i 's/samples: .*/samples: 50/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+          sed -i 's/localhost:8000/localhost:9000/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+          sed -i 's/target_concurrency: .*/target_concurrency: ${{ matrix.target_concurrencies }}/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+          sed -i 's/n_samples_to_issue: .*/n_samples_to_issue: 50/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+          echo "Running warmup on PR branch (50 samples, results discarded)..."
+          inference-endpoint benchmark from-config \
+            -c examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml \
+            --timeout 6000
+          echo "Warmup complete."
+          git checkout -- examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+
+      - name: Benchmark — PR branch
+        run: |
+          source gh_action_endpts/bin/activate
+          sed -i 's/samples: .*/samples: 2000/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+          sed -i 's/localhost:8000/localhost:9000/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+          sed -i 's/target_concurrency: .*/target_concurrency: ${{ matrix.target_concurrencies }}/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+          sed -i 's/n_samples_to_issue: .*/n_samples_to_issue: 2000/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+          echo "Running benchmark on PR branch (2000 samples)..."
+          inference-endpoint benchmark from-config \
+            -c examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml \
+            --timeout 6000
+          echo "===== result_summary.json (PR) ====="
+          cat logs/llama3_8b_cnn_online/result_summary.json
+          git checkout -- examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+
+      - name: Upload PR branch results
+        env:
+          BASE_SHA: ${{ needs.setup_vllm_server.outputs.base_sha }}
+          HEAD_SHA: ${{ needs.setup_vllm_server.outputs.head_sha }}
+          CONCURRENCY: ${{ matrix.target_concurrencies }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          TEMP_LOGS="/tmp/benchmark_pr_${CONCURRENCY}_$$"
+          cp -r logs/llama3_8b_cnn_online/ "$TEMP_LOGS"
+
+          git fetch origin pr-tests 2>/dev/null || true
+          git checkout -b pr-tests origin/pr-tests 2>/dev/null || git checkout pr-tests
+
+          FOLDER_PREFIX="llama-3.1-8b_vllm_perf_concurrency${CONCURRENCY}_${BASE_SHA}-${HEAD_SHA}_pr_trial"
+          EXISTING=$(ls -d ${FOLDER_PREFIX}* 2>/dev/null | wc -l)
+          TRIAL_COUNT=$((EXISTING + 1))
+          RESULT_FOLDER="${FOLDER_PREFIX}${TRIAL_COUNT}"
+          echo "Uploading PR results to: $RESULT_FOLDER"
+          mkdir -p "$RESULT_FOLDER"
+          cp -r "$TEMP_LOGS/." "$RESULT_FOLDER/"
+
+          git add "$RESULT_FOLDER"
+          git commit -m "Add PR benchmark results: $RESULT_FOLDER [PR #${{ github.event.pull_request.number }}]"
+          git push origin pr-tests
+
+  post_pr_comment:
+    needs: [ setup_vllm_server, run_benchmarks ]
+    runs-on: [ self-hosted, mlc2 ]
+    steps:
+      - name: Checkout pr-tests branch
+        uses: actions/checkout@v4
+        with:
+          ref: pr-tests
+
+      - name: Generate regression report and post PR comment
+        env:
+          BASE_SHA: ${{ needs.setup_vllm_server.outputs.base_sha }}
+          HEAD_SHA: ${{ needs.setup_vllm_server.outputs.head_sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          python3 << 'EOF'
+          import json, os
+          from pathlib import Path
+
+          base_sha        = os.environ["BASE_SHA"]
+          head_sha        = os.environ["HEAD_SHA"]
+          pr_number       = os.environ["PR_NUMBER"]
+          repo            = os.environ["REPO"]
+          run_id          = os.environ["RUN_ID"]
+          run_number      = os.environ["RUN_NUMBER"]
+          THRESHOLD       = 0.02  # 2%
+          concurrencies   = [1, 4, 16]
+
+          def load_latest(branch_tag, concurrency):
+              prefix  = f"llama-3.1-8b_vllm_perf_concurrency{concurrency}_{base_sha}-{head_sha}_{branch_tag}_trial"
+              matches = sorted(Path(".").glob(f"{prefix}*/result_summary.json"))
+              if not matches:
+                  return None
+              with open(matches[-1]) as f:
+                  data = json.load(f)
+              data["_trial"] = matches[-1].parent.name.split("_trial")[-1]
+              return data
+
+          def ms(v):
+              return round(v / 1_000_000, 2) if v is not None else None
+
+          def delta(main_v, pr_v, lower_is_better=False):
+              if main_v is None or pr_v is None or main_v == 0:
+                  return "N/A", "⚪"
+              pct   = (pr_v - main_v) / main_v
+              label = f"{'+'if pct>=0 else ''}{round(pct*100,2)}%"
+              bad   = pct > THRESHOLD if lower_is_better else pct < -THRESHOLD
+              return label, ("⚠️" if bad else "✅")
+
+          lines            = []
+          overall_bad      = False
+
+          lines += [
+              "## 🔬 Performance Benchmark Report",
+              f"**PR #{pr_number}** | Run [#{run_number}](https://github.com/{repo}/actions/runs/{run_id})",
+              f"**Base (main):** `{base_sha}` → **PR head:** `{head_sha}`",
+              f"> Regression threshold: **{int(THRESHOLD*100)}%** | Samples: **2000** | Warmup: **50 samples** per branch",
+              "",
+          ]
+
+          for c in concurrencies:
+              m = load_latest("main", c)
+              p = load_latest("pr",   c)
+              lines.append(f"### Concurrency {c}")
+
+              if not m or not p:
+                  missing = "main" if not m else "PR"
+                  lines += [f"> ⚠️ Results missing for **{missing}** at concurrency {c}.", ""]
+                  continue
+
+              lines.append(f"_Main trial: {m['_trial']} · PR trial: {p['_trial']}_")
+              lines += [
+                  "",
+                  "| Metric | Main | PR | Delta | Status |",
+                  "|--------|------|----|-------|--------|",
+              ]
+
+              rows = [
+                  ("QPS",                  round(m.get("qps",0),3),                                          round(p.get("qps",0),3),                                          False),
+                  ("TTFT median (ms)",     ms(m.get("ttft",{}).get("median")),                               ms(p.get("ttft",{}).get("median")),                               True),
+                  ("TTFT p90 (ms)",        ms(m.get("ttft",{}).get("percentiles",{}).get("90")),             ms(p.get("ttft",{}).get("percentiles",{}).get("90")),             True),
+                  ("TTFT p99 (ms)",        ms(m.get("ttft",{}).get("percentiles",{}).get("99")),             ms(p.get("ttft",{}).get("percentiles",{}).get("99")),             True),
+                  ("Latency median (ms)",  ms(m.get("latency",{}).get("median")),                            ms(p.get("latency",{}).get("median")),                            True),
+                  ("Latency p90 (ms)",     ms(m.get("latency",{}).get("percentiles",{}).get("90")),          ms(p.get("latency",{}).get("percentiles",{}).get("90")),          True),
+                  ("Latency p99 (ms)",     ms(m.get("latency",{}).get("percentiles",{}).get("99")),          ms(p.get("latency",{}).get("percentiles",{}).get("99")),          True),
+              ]
+
+              for label, mv, pv, lib in rows:
+                  d, e = delta(mv, pv, lib)
+                  if e == "⚠️": overall_bad = True
+                  lines.append(f"| {label} | {mv} | {pv} | {d} | {e} |")
+
+              lines.append("")
+
+          lines += ["---"]
+          if overall_bad:
+              lines += [
+                  "### ⚠️ Performance regression detected",
+                  f"One or more metrics degraded by more than {int(THRESHOLD*100)}% vs main. Please review before merging.",
+              ]
+          else:
+              lines += [
+                  "### ✅ No performance regression detected",
+                  f"All metrics are within the {int(THRESHOLD*100)}% threshold compared to main.",
+              ]
+
+          body = "\n".join(lines)
+          with open("/tmp/pr_comment.json", "w") as f:
+              json.dump({"body": body}, f)
+          print(body)
+          EOF
+
+      - name: Post comment to PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          curl -s -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d @/tmp/pr_comment.json \
+            "https://api.github.com/repos/${REPO}/issues/${PR_NUMBER}/comments"
+            
+  teardown_server:
+    needs: [ run_benchmarks, post_pr_comment ]
+    runs-on: [ self-hosted, mlc2 ]
+    if: always()
     steps:
       - name: Stop vLLM server
         run: |
@@ -238,3 +424,4 @@ jobs:
         run: |
           rm -rf ${{ github.workspace }}
           mkdir -p ${{ github.workspace }}
+          rm -rf /tmp/benchmark_main_* /tmp/benchmark_pr_* /tmp/pr_comment.json || true
