@@ -81,6 +81,9 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
+          # Pre-cleanup: In case if runner exited/crashed
+          docker rm -f vllm_server_llama3_endpts 2>/dev/null || true
+          
           MODEL_NAME=meta-llama/Llama-3.1-8B-Instruct
           HF_HOME=/data/common/anandhu/endptshfdown
           echo "Extra GPU flags for PODMAN: $PODMAN_GPU_FLAGS"
