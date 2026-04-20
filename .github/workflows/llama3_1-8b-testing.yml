@@ -46,7 +46,7 @@ jobs:
                     --format=csv,noheader,nounits | \
                     awk -F',' '$2 < 100 {print $1}' | tr -d ' ')
 
-            FREE_GPU_COUNT=$(echo "$FREE_GPU_IDS" | grep -c '[0-9]' || echo 0)
+            FREE_GPU_COUNT=$(echo "$FREE_GPU_IDS" | grep -c '[0-9]' 2>/dev/null) || FREE_GPU_COUNT=0
 
             if [ "$FREE_GPU_COUNT" -ge "$REQUIRED_GPUS" ]; then
               SELECTED_GPUS=$(echo "$FREE_GPU_IDS" | head -n "$REQUIRED_GPUS" | tr '\n' ',' | sed 's/,$//')
