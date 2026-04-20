@@ -3,6 +3,10 @@ name: test endpoints llama3-8b
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+    paths:
+      - 'src/inference_endpoints/**'
+      - 'examples/**'
+      - 'pyproject.toml'
 
 concurrency:
   group: endpts-gpu-benchmark-testing-pipeline
@@ -157,7 +161,6 @@ jobs:
           inference-endpoint benchmark from-config -c "$CFG" --timeout 6000
           rm -f "$CFG"
           echo "Warmup complete."
-          git checkout -- examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
 
       - name: Benchmark — main branch
         run: |
@@ -172,7 +175,6 @@ jobs:
           rm -f "$CFG"
           echo "===== result_summary.json (main) ====="
           cat logs/llama3_8b_cnn_online/result_summary.json
-          git checkout -- examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
 
       - name: Upload main branch results as artifact
         uses: actions/upload-artifact@v4
@@ -209,7 +211,6 @@ jobs:
           inference-endpoint benchmark from-config -c "$CFG" --timeout 6000
           rm -f "$CFG"
           echo "Warmup complete."
-          git checkout -- examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
 
       - name: Benchmark — PR branch
         run: |
@@ -225,7 +226,6 @@ jobs:
           rm -f "$CFG"
           echo "===== result_summary.json (PR) ====="
           cat logs/llama3_8b_cnn_online/result_summary.json
-          git checkout -- examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
 
       - name: Upload PR branch results as artifact
         uses: actions/upload-artifact@v4
