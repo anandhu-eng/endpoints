@@ -4,13 +4,14 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+concurrency:
+  group: endpts-gpu-benchmark-testing-pipeline
+  cancel-in-progress: false
+  
 jobs:
   setup_vllm_server:
     runs-on: [ self-hosted, mlc2 ]
     environment: sef-hosted-runner-benchmark-approval
-    concurrency:
-      group: endpts-vllm-server
-      cancel-in-progress: false
     outputs:
       base_sha: ${{ steps.capture_shas.outputs.base_sha }}
       head_sha: ${{ steps.capture_shas.outputs.head_sha }}
@@ -118,9 +119,6 @@ jobs:
   run_benchmarks:
     needs: setup_vllm_server
     runs-on: [ self-hosted, mlc2 ]
-    concurrency:
-      group: inference-llama3-8b
-      cancel-in-progress: false
     strategy:
       max-parallel: 1
       matrix:
