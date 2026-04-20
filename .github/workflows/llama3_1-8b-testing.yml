@@ -273,11 +273,11 @@ jobs:
           concurrencies   = [1, 4, 16]
 
           # Artifacts are downloaded into:
-          # downloaded-artifacts/benchmark-{main|pr}-concurrency{N}-{base_sha}-{head_sha}/
+          # downloaded-artifacts/llama-3.1-8b_vllm_perf_concurrency{N}-{base_sha}-{head_sha}-{branch_tag}/
           ARTIFACT_ROOT = Path("downloaded-artifacts")
 
           def load_result(branch_tag, concurrency):
-              artifact_dir = ARTIFACT_ROOT / f"benchmark-{branch_tag}-concurrency{concurrency}-{base_sha}-{head_sha}"
+              artifact_dir = ARTIFACT_ROOT / f"llama-3.1-8b_vllm_perf_concurrency{concurrency}-{base_sha}-{head_sha}-{branch_tag}"
               result_file  = artifact_dir / "result_summary.json"
               if not result_file.exists():
                   print(f"WARNING: result file not found: {result_file}")
@@ -308,8 +308,8 @@ jobs:
           ]
 
           for c in concurrencies:
-              m = load_result("main", c)
-              p = load_result("pr",   c)
+              m = load_result("Main", c)
+              p = load_result("PR",   c)
               lines.append(f"### Concurrency {c}")
 
               if not m or not p:
