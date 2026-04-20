@@ -148,28 +148,28 @@ jobs:
       - name: Warmup run — main (no upload)
         run: |
           source gh_action_endpts/bin/activate
-          sed -i 's/samples: .*/samples: 50/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
-          sed -i 's/localhost:8000/localhost:9000/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
-          sed -i 's/target_concurrency: .*/target_concurrency: ${{ matrix.target_concurrencies }}/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
-          sed -i 's/n_samples_to_issue: .*/n_samples_to_issue: 50/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
-          echo "Running warmup on main branch (50 samples, results discarded)..."
-          inference-endpoint benchmark from-config \
-            -c examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml \
-            --timeout 6000
+          CFG=$(mktemp /tmp/bench_cfg_llama3_1-8b.yaml)
+          cp examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml "$CFG"
+          sed -i 's/samples: .*/samples: 50/g' "$CFG"
+          sed -i 's/localhost:8000/localhost:9000/g' "$CFG"
+          sed -i "s/target_concurrency: .*/target_concurrency: ${{ matrix.target_concurrencies }}/g" "$CFG"
+          sed -i 's/n_samples_to_issue: .*/n_samples_to_issue: 50/g' "$CFG"
+          inference-endpoint benchmark from-config -c "$CFG" --timeout 6000
+          rm -f "$CFG"
           echo "Warmup complete."
           git checkout -- examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
 
       - name: Benchmark — main branch
         run: |
           source gh_action_endpts/bin/activate
-          sed -i 's/samples: .*/samples: 2000/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
-          sed -i 's/localhost:8000/localhost:9000/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
-          sed -i 's/target_concurrency: .*/target_concurrency: ${{ matrix.target_concurrencies }}/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
-          sed -i 's/n_samples_to_issue: .*/n_samples_to_issue: 2000/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
-          echo "Running benchmark on main branch (2000 samples)..."
-          inference-endpoint benchmark from-config \
-            -c examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml \
-            --timeout 6000
+          CFG=$(mktemp /tmp/bench_cfg_llama3_1-8b.yaml)
+          cp examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml "$CFG"
+          sed -i 's/samples: .*/samples: 2000/g' "$CFG"
+          sed -i 's/localhost:8000/localhost:9000/g' "$CFG"
+          sed -i "s/target_concurrency: .*/target_concurrency: ${{ matrix.target_concurrencies }}/g" "$CFG"
+          sed -i 's/n_samples_to_issue: .*/n_samples_to_issue: 2000/g' "$CFG"
+          inference-endpoint benchmark from-config -c "$CFG" --timeout 600000
+          rm -f "$CFG"
           echo "===== result_summary.json (main) ====="
           cat logs/llama3_8b_cnn_online/result_summary.json
           git checkout -- examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
@@ -199,28 +199,30 @@ jobs:
       - name: Warmup run — PR branch (no upload)
         run: |
           source gh_action_endpts/bin/activate
-          sed -i 's/samples: .*/samples: 50/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
-          sed -i 's/localhost:8000/localhost:9000/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
-          sed -i 's/target_concurrency: .*/target_concurrency: ${{ matrix.target_concurrencies }}/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
-          sed -i 's/n_samples_to_issue: .*/n_samples_to_issue: 50/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+          CFG=$(mktemp /tmp/bench_cfg_llama3_1-8b.yaml)
+          cp examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml "$CFG"
+          sed -i 's/samples: .*/samples: 50/g' "$CFG"
+          sed -i 's/localhost:8000/localhost:9000/g' "$CFG"
+          sed -i "s/target_concurrency: .*/target_concurrency: ${{ matrix.target_concurrencies }}/g" "$CFG"
+          sed -i 's/n_samples_to_issue: .*/n_samples_to_issue: 50/g' "$CFG"
           echo "Running warmup on PR branch (50 samples, results discarded)..."
-          inference-endpoint benchmark from-config \
-            -c examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml \
-            --timeout 6000
+          inference-endpoint benchmark from-config -c "$CFG" --timeout 6000
+          rm -f "$CFG"
           echo "Warmup complete."
           git checkout -- examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
 
       - name: Benchmark — PR branch
         run: |
           source gh_action_endpts/bin/activate
-          sed -i 's/samples: .*/samples: 2000/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
-          sed -i 's/localhost:8000/localhost:9000/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
-          sed -i 's/target_concurrency: .*/target_concurrency: ${{ matrix.target_concurrencies }}/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
-          sed -i 's/n_samples_to_issue: .*/n_samples_to_issue: 2000/g' examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
+          CFG=$(mktemp /tmp/bench_cfg_llama3_1-8b.yaml)
+          cp examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml "$CFG"
+          sed -i 's/samples: .*/samples: 2000/g' "$CFG"
+          sed -i 's/localhost:8000/localhost:9000/g' "$CFG"
+          sed -i "s/target_concurrency: .*/target_concurrency: ${{ matrix.target_concurrencies }}/g" "$CFG"
+          sed -i 's/n_samples_to_issue: .*/n_samples_to_issue: 2000/g' "$CFG"
           echo "Running benchmark on PR branch (2000 samples)..."
-          inference-endpoint benchmark from-config \
-            -c examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml \
-            --timeout 6000
+          inference-endpoint benchmark from-config -c "$CFG" --timeout 600000
+          rm -f "$CFG"
           echo "===== result_summary.json (PR) ====="
           cat logs/llama3_8b_cnn_online/result_summary.json
           git checkout -- examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
