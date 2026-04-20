@@ -131,6 +131,7 @@ jobs:
         with:
           python-version: '3.12'
 
+      # MAIN BRANCH 
       - name: Checkout main branch
         uses: actions/checkout@v4
         with:
@@ -172,43 +173,16 @@ jobs:
           cat logs/llama3_8b_cnn_online/result_summary.json
           git checkout -- examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
 
-      - name: Upload main branch results
-        env:
-          BASE_SHA: ${{ needs.setup_vllm_server.outputs.base_sha }}
-          HEAD_SHA: ${{ needs.setup_vllm_server.outputs.head_sha }}
-          CONCURRENCY: ${{ matrix.target_concurrencies }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Upload main branch results as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          # Artifact name encodes concurrency + SHA pair for easy retrieval
+          name: llama-3.1-8b_vllm_perf_concurrency${{ matrix.target_concurrencies }}-${{ needs.setup_vllm_server.outputs.base_sha }}-${{ needs.setup_vllm_server.outputs.head_sha }}
+          path: logs/llama3_8b_cnn_online/
+          retention-days: 30
+          if-no-files-found: error
 
-          # Save logs before switching branches
-          TEMP_LOGS="/tmp/benchmark_main_${CONCURRENCY}_$$"
-          cp -r logs/llama3_8b_cnn_online/ "$TEMP_LOGS"
-
-          git fetch origin pr-tests 2>/dev/null || true
-          if git show-ref --verify --quiet refs/remotes/origin/pr-tests; then
-            git checkout -b pr-tests origin/pr-tests 2>/dev/null || git checkout pr-tests
-          else
-            echo "Creating pr-tests as orphan branch"
-            git checkout --orphan pr-tests
-            git rm -rf . 2>/dev/null || true
-          fi
-
-          FOLDER_PREFIX="llama-3.1-8b_vllm_perf_concurrency${CONCURRENCY}_${BASE_SHA}-${HEAD_SHA}_main_trial"
-          EXISTING=$(ls -d ${FOLDER_PREFIX}* 2>/dev/null | wc -l)
-          TRIAL_COUNT=$((EXISTING + 1))
-          RESULT_FOLDER="${FOLDER_PREFIX}${TRIAL_COUNT}"
-          echo "Uploading main results to: $RESULT_FOLDER"
-          mkdir -p "$RESULT_FOLDER"
-          cp -r "$TEMP_LOGS/." "$RESULT_FOLDER/"
-
-          git add "$RESULT_FOLDER"
-          git commit -m "Add main benchmark results: $RESULT_FOLDER [PR #${{ github.event.pull_request.number }}]"
-          git push origin pr-tests
-
-          # Return to main branch for next steps
-          git checkout ${{ github.event.pull_request.base.ref }}
-
+      # PR BRANCH
       - name: Checkout PR head branch
         uses: actions/checkout@v4
         with:
@@ -250,41 +224,30 @@ jobs:
           cat logs/llama3_8b_cnn_online/result_summary.json
           git checkout -- examples/05_Llama3.1-8B_Example/online_llama3_8b_cnn.yaml
 
-      - name: Upload PR branch results
-        env:
-          BASE_SHA: ${{ needs.setup_vllm_server.outputs.base_sha }}
-          HEAD_SHA: ${{ needs.setup_vllm_server.outputs.head_sha }}
-          CONCURRENCY: ${{ matrix.target_concurrencies }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          TEMP_LOGS="/tmp/benchmark_pr_${CONCURRENCY}_$$"
-          cp -r logs/llama3_8b_cnn_online/ "$TEMP_LOGS"
-
-          git fetch origin pr-tests 2>/dev/null || true
-          git checkout -b pr-tests origin/pr-tests 2>/dev/null || git checkout pr-tests
-
-          FOLDER_PREFIX="llama-3.1-8b_vllm_perf_concurrency${CONCURRENCY}_${BASE_SHA}-${HEAD_SHA}_pr_trial"
-          EXISTING=$(ls -d ${FOLDER_PREFIX}* 2>/dev/null | wc -l)
-          TRIAL_COUNT=$((EXISTING + 1))
-          RESULT_FOLDER="${FOLDER_PREFIX}${TRIAL_COUNT}"
-          echo "Uploading PR results to: $RESULT_FOLDER"
-          mkdir -p "$RESULT_FOLDER"
-          cp -r "$TEMP_LOGS/." "$RESULT_FOLDER/"
-
-          git add "$RESULT_FOLDER"
-          git commit -m "Add PR benchmark results: $RESULT_FOLDER [PR #${{ github.event.pull_request.number }}]"
-          git push origin pr-tests
+      - name: Upload PR branch results as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-3.1-8b_vllm_perf_concurrency${{ matrix.target_concurrencies }}-${{ needs.setup_vllm_server.outputs.base_sha }}-${{ needs.setup_vllm_server.outputs.head_sha }}
+          path: logs/llama3_8b_cnn_online/
+          retention-days: 30
+          if-no-files-found: error
 
   post_pr_comment:
     needs: [ setup_vllm_server, run_benchmarks ]
     runs-on: [ self-hosted, mlc2 ]
     steps:
-      - name: Checkout pr-tests branch
-        uses: actions/checkout@v4
+      # Download all 6 artifacts (main + PR) x (concurrency 1, 4, 16)
+      # Each lands in its own subdirectory named after the artifact
+      - name: Download all benchmark artifacts
+        uses: actions/download-artifact@v4
         with:
-          ref: pr-tests
+          # No `name` specified → downloads ALL artifacts from this run
+          path: downloaded-artifacts/
+
+      - name: List downloaded artifacts (debug)
+        run: |
+          echo "=== Downloaded artifact structure ==="
+          find downloaded-artifacts/ -type f | sort
 
       - name: Generate regression report and post PR comment
         env:
@@ -309,15 +272,18 @@ jobs:
           THRESHOLD       = 0.02  # 2%
           concurrencies   = [1, 4, 16]
 
-          def load_latest(branch_tag, concurrency):
-              prefix  = f"llama-3.1-8b_vllm_perf_concurrency{concurrency}_{base_sha}-{head_sha}_{branch_tag}_trial"
-              matches = sorted(Path(".").glob(f"{prefix}*/result_summary.json"))
-              if not matches:
+          # Artifacts are downloaded into:
+          # downloaded-artifacts/benchmark-{main|pr}-concurrency{N}-{base_sha}-{head_sha}/
+          ARTIFACT_ROOT = Path("downloaded-artifacts")
+
+          def load_result(branch_tag, concurrency):
+              artifact_dir = ARTIFACT_ROOT / f"benchmark-{branch_tag}-concurrency{concurrency}-{base_sha}-{head_sha}"
+              result_file  = artifact_dir / "result_summary.json"
+              if not result_file.exists():
+                  print(f"WARNING: result file not found: {result_file}")
                   return None
-              with open(matches[-1]) as f:
-                  data = json.load(f)
-              data["_trial"] = matches[-1].parent.name.split("_trial")[-1]
-              return data
+              with open(result_file) as f:
+                  return json.load(f)
 
           def ms(v):
               return round(v / 1_000_000, 2) if v is not None else None
@@ -330,8 +296,8 @@ jobs:
               bad   = pct > THRESHOLD if lower_is_better else pct < -THRESHOLD
               return label, ("⚠️" if bad else "✅")
 
-          lines            = []
-          overall_bad      = False
+          lines       = []
+          overall_bad = False
 
           lines += [
               "## 🔬 Performance Benchmark Report",
@@ -342,8 +308,8 @@ jobs:
           ]
 
           for c in concurrencies:
-              m = load_latest("main", c)
-              p = load_latest("pr",   c)
+              m = load_result("main", c)
+              p = load_result("pr",   c)
               lines.append(f"### Concurrency {c}")
 
               if not m or not p:
@@ -351,7 +317,6 @@ jobs:
                   lines += [f"> ⚠️ Results missing for **{missing}** at concurrency {c}.", ""]
                   continue
 
-              lines.append(f"_Main trial: {m['_trial']} · PR trial: {p['_trial']}_")
               lines += [
                   "",
                   "| Metric | Main | PR | Delta | Status |",
@@ -404,7 +369,7 @@ jobs:
             -H "Content-Type: application/json" \
             -d @/tmp/pr_comment.json \
             "https://api.github.com/repos/${REPO}/issues/${PR_NUMBER}/comments"
-            
+
   teardown_server:
     needs: [ run_benchmarks, post_pr_comment ]
     runs-on: [ self-hosted, mlc2 ]
