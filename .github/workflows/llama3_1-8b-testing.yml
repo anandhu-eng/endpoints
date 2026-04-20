@@ -177,7 +177,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           # Artifact name encodes concurrency + SHA pair for easy retrieval
-          name: llama-3.1-8b_vllm_perf_concurrency${{ matrix.target_concurrencies }}-${{ needs.setup_vllm_server.outputs.base_sha }}-${{ needs.setup_vllm_server.outputs.head_sha }}
+          name: llama-3.1-8b_vllm_perf_concurrency${{ matrix.target_concurrencies }}-${{ needs.setup_vllm_server.outputs.base_sha }}-${{ needs.setup_vllm_server.outputs.head_sha }}-Main
           path: logs/llama3_8b_cnn_online/
           retention-days: 30
           if-no-files-found: error
@@ -227,7 +227,7 @@ jobs:
       - name: Upload PR branch results as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: llama-3.1-8b_vllm_perf_concurrency${{ matrix.target_concurrencies }}-${{ needs.setup_vllm_server.outputs.base_sha }}-${{ needs.setup_vllm_server.outputs.head_sha }}
+          name: llama-3.1-8b_vllm_perf_concurrency${{ matrix.target_concurrencies }}-${{ needs.setup_vllm_server.outputs.base_sha }}-${{ needs.setup_vllm_server.outputs.head_sha }}-PR
           path: logs/llama3_8b_cnn_online/
           retention-days: 30
           if-no-files-found: error
